@@ -887,7 +887,6 @@ function viewRev(el,t,existing){
     if(!r.nombre) return alert('Captura el nombre de quien verifica.');
     if(!r.firma&&!confirm('La revisión no tiene firma. ¿Guardar de todos modos?')) return;
     r.estado='pendiente';
-    if(!r.folio){ const y=(r.fecha||today()).slice(0,4); const n=(S.settings.folioSeq[y]||0)+1; S.settings.folioSeq[y]=n; r.folio=`REV-${y}-${String(n).padStart(4,'0')}`; await save('settings'); }
     const k=S.revisions.findIndex(x=>x.id===r.id); if(k>=0) S.revisions[k]=r; else S.revisions.push(r);
     if(!S.settings.nombre||!S.settings.puesto){S.settings.nombre=S.settings.nombre||r.nombre;S.settings.puesto=S.settings.puesto||r.puesto;await save('settings');}
     await save('revisions'); dirty=false; toast('Revisión guardada'); back();
@@ -913,7 +912,7 @@ function viewRevs(el){
   const pend=pendingRevs().sort((a,b)=>(a.fecha+a.hora).localeCompare(b.fecha+b.hora));
   const sent=S.revisions.filter(r=>r.estado==='enviada').sort((a,b)=>(b.fecha+b.hora).localeCompare(a.fecha+a.hora));
   const item=r=>`<div class="term" style="display:flex;gap:10px;align-items:flex-start"><input type="checkbox" class="sel" data-id="${r.id}" ${r.estado!=='enviada'?'checked':''} style="width:22px;height:22px;margin-top:3px;flex:none">
-    <div style="flex:1" data-open="${r.id}"><div class="t1">${esc(r.termLabel||r.h.linea)}</div><div class="t2">${esc(r.folio||'')} · ${fmtDate(r.fecha)} ${esc(r.hora)} · ${esc(r.tipo)} · Serie ${esc(r.h.serie||'—')}</div>
+    <div style="flex:1" data-open="${r.id}"><div class="t1">${esc(r.termLabel||r.h.linea)}</div><div class="t2">${fmtDate(r.fecha)} ${esc(r.hora)} · ${esc(r.tipo)} · Serie ${esc(r.h.serie||'—')}</div>
     ${r.alertas?`<span class="badge bad">${r.alertas} alerta(s)</span>`:'<span class="badge ok">Sin alertas</span>'}${r.fotos&&r.fotos.length?`<span class="badge">${r.fotos.length} foto(s)</span>`:''}${r.firma?'':'<span class="badge acc">Sin firma</span>'}</div></div>`;
   el.innerHTML=`
     <div class="card"><h2>Pendientes de enviar (${pend.length})</h2>
@@ -977,8 +976,8 @@ function inventoryWb(){
 async function exportInventory(){ await shareFiles([xlsxFile(inventoryWb(),`Inventario_TPV_${today()}.xlsx`)],'Inventario TPV','Inventario de terminales punto de venta'); }
 function summaryWb(revs){
   const wb=XLSX.utils.book_new();
-  const head=['Folio','Fecha','Hora','Tipo de solicitud',...HDR1.map(x=>x[1]),...HDR2.map(x=>x[1]),...QUESTIONS.map((q,i)=>`${i+1}) ${q}`),'Alertas','Observaciones incisos 1-9','Observaciones incisos 10-14','Puesto','Verificó','Firma'];
-  const aoa=[head,...revs.map(r=>[r.folio||'',fmtDate(r.fecha),r.hora,r.tipo,...HDR1.map(x=>r.h[x[0]]),...HDR2.map(x=>r.h[x[0]]),...r.ans,r.alertas||0,r.obs1||'',r.obs2||'',r.puesto,r.nombre,r.firma?'Sí':'No'])];
+  const head=['Fecha','Hora','Tipo de solicitud',...HDR1.map(x=>x[1]),...HDR2.map(x=>x[1]),...QUESTIONS.map((q,i)=>`${i+1}) ${q}`),'Alertas','Observaciones incisos 1-9','Observaciones incisos 10-14','Puesto','Verificó','Firma'];
+  const aoa=[head,...revs.map(r=>[fmtDate(r.fecha),r.hora,r.tipo,...HDR1.map(x=>r.h[x[0]]),...HDR2.map(x=>r.h[x[0]]),...r.ans,r.alertas||0,r.obs1||'',r.obs2||'',r.puesto,r.nombre,r.firma?'Sí':'No'])];
   const ws=XLSX.utils.aoa_to_sheet(aoa); ws['!cols']=head.map(h=>({wch:/^\d+\)/.test(h)?8:16}));
   XLSX.utils.book_append_sheet(wb,ws,'Revisiones'); return wb;
 }
@@ -999,7 +998,6 @@ function pagePdf(doc,r){
   doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(...NAVY); doc.text('Check List TPV',W/2,y+7,{align:'center'});
   doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(...GRAY);
   doc.text('Verificación física de terminales punto de venta · PCI DSS',W/2,y+11.5,{align:'center'});
-  if(r.folio){doc.setFont('helvetica','bold');doc.setTextColor(...NAVY);doc.text('Folio: '+r.folio,W/2,y+15.5,{align:'center'});}
   y+=19;
   const section=(t,x=M,w=CW)=>{doc.setFillColor(...NAVY);doc.rect(x,y,w,5.5,'F');doc.setTextColor(255);doc.setFont('helvetica','bold');doc.setFontSize(9.5);doc.text(t,x+2.5,y+3.9);};
   // dos columnas: cliente | TPV
@@ -1057,7 +1055,7 @@ function pagePdf(doc,r){
   if(r.fotos&&r.fotos.length){
     doc.addPage(); let py=14;
     doc.setFont('helvetica','bold');doc.setFontSize(13);doc.setTextColor(...NAVY);doc.text('Evidencia fotográfica',M,py+4);
-    doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(...GRAY);doc.text(`${r.folio||''} · ${r.h.linea} · Serie ${r.h.serie} · ${fmtDate(r.fecha)} ${r.hora}`,M,py+9);
+    doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(...GRAY);doc.text(`${r.h.linea} · Serie ${r.h.serie} · ${fmtDate(r.fecha)} ${r.hora}`,M,py+9);
     py+=14; const cw=(CW-6)/2, ch=cw*0.75;
     r.fotos.forEach((p,i)=>{const x=M+(i%2)*(cw+6), yy=py+Math.floor(i/2)*(ch+6);
       try{const pr=doc.getImageProperties(p);const s=Math.min(cw/pr.width,ch/pr.height);doc.addImage(p,'JPEG',x+(cw-pr.width*s)/2,yy+(ch-pr.height*s)/2,pr.width*s,pr.height*s);}catch(e){}
@@ -1099,7 +1097,7 @@ function viewCfg(el){
       <button class="btn block" id="rs">Restaurar respaldo</button>
       <button class="btn danger block" id="wipe">Borrar todos los datos</button>
     </div>
-    <div class="note" style="text-align:center">Revisión TPV PCI · v1.1 · funciona sin conexión</div>`;
+    <div class="note" style="text-align:center">Revisión TPV PCI · v1.2 · funciona sin conexión</div>`;
   const drawEmps=()=>{$('#emps').innerHTML=Object.entries(st.empresas).map(([k,e])=>`<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:4px" data-k="${esc(k)}">
     <label class="f"><span>Clave</span><input type="text" data-x="k" value="${esc(k)}"></label>
     <label class="f"><span>Razón social</span><input type="text" data-x="razon" value="${esc(e.razon)}"></label>
