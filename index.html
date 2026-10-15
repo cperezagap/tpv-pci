@@ -98,7 +98,7 @@ img.lg{max-height:56px;max-width:220px;display:block;margin:4px 0 8px;background
   <button data-tab="cfg"><span class="ic">⚙</span>Ajustes</button>
 </nav>
 <input type="file" id="fileXlsx" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hide">
-<input type="file" id="fileJson" accept=".json,application/json" class="hide">
+<input type="file" id="fileJson" accept=".txt,.json,text/plain,application/json" class="hide">
 <input type="file" id="fileLogo" accept="image/*" class="hide">
 <input type="file" id="filePhoto" accept="image/*" capture="environment" class="hide">
 
@@ -596,11 +596,26 @@ function splitImei(v){
   const m=v.match(/IMEI\s*1\s*:?\s*(\S*)\s*IMEI\s*2\s*:?\s*(\S*)/i); if(m) return [m[1],m[2]];
   const n=v.replace(/IMEI\s*\d?\s*:?/gi,' ').split(/[\s\/,;]+/).filter(Boolean); return [n[0]||'',n.slice(1).join(' ')];
 }
+const normS=v=>String(v||'').replace(/\s+/g,'').toUpperCase();
+function termKey(f){const sr=normS(f["Número de serie"]); return sr?'S:'+sr:'K:'+[f.Empresa,f["Ubicación"],f["Tipo Terminal"],f["Afiliación Visa-Mcard"],f["Afiliación Amex"],f["No. Caja"]].map(normS).join('|');}
+function relink(){ // revisiones cuya terminal ya no existe con ese id: se vuelven a enlazar por número de serie
+  const ids=new Set(S.terminals.map(t=>t.id)); const bySerie=new Map(); S.terminals.forEach(t=>{const k=normS(t.f["Número de serie"]); if(k&&!bySerie.has(k)) bySerie.set(k,t);});
+  let n=0; S.revisions.forEach(r=>{ if(!ids.has(r.termId)){ const t=bySerie.get(normS(r.h&&r.h.serie)); if(t){r.termId=t.id;n++;} } });
+  // fecha de inventario: si una terminal no tiene, se toma de la bitácora de cambios
+  S.terminals.forEach(t=>{ if(!t.verif){ const c=S.changes.filter(c=>(c.termId===t.id)||(normS(c.serie)&&normS(c.serie)===normS(t.f["Número de serie"]))).map(c=>c.fecha.slice(0,10)).sort().pop(); if(c) t.verif=c; } });
+  return n;
+}
 function migrate(){ // datos de la v1.0
   S.terminals.forEach(t=>{ if('IMEI' in t.f){ const [a,b]=splitImei(t.f.IMEI); t.f['IMEI 1']=t.f['IMEI 1']||a; t.f['IMEI 2']=t.f['IMEI 2']||b; delete t.f.IMEI; } });
+  S.revisions.forEach(r=>{ if(r.h&&r.h.afilVM===undefined){
+      const t=S.terminals.find(x=>x.id===r.termId);
+      if(t){ const a=afilSplit(t.f); r.h.afilVM=a.vm; r.h.afilAmex=a.amex; r.h.tipoTerm=t.f["Tipo Terminal"]||''; r.h.banco=t.f.Banco||''; }
+      else { const m=String(r.h.afil||'').split(/\s*\/\s*Amex\s*/i); r.h.afilVM=m[0]||''; r.h.afilAmex=m[1]||''; r.h.tipoTerm=r.h.tipoTerm||''; r.h.banco=r.h.banco||r.banco||''; }
+      delete r.h.afil; } });
   S.revisions.forEach(r=>{ if(r.obs!==undefined&&r.obs1===undefined){r.obs1=r.obs;r.obs2='';} if(r.h&&r.h.imei!==undefined&&r.h.imei1===undefined){[r.h.imei1,r.h.imei2]=splitImei(r.h.imei);} });
   if(!S.settings.bankLogos) S.settings.bankLogos=structuredClone(DEFAULT_SETTINGS.bankLogos);
   if(!S.settings.folioSeq) S.settings.folioSeq={};
+  relink();
 }
 
 /* ============ Utilidades ============ */
@@ -625,20 +640,33 @@ function render(fn,title){
   $('#title').textContent=title||'Revisión TPV PCI';
   $('#back').classList.toggle('hide',stack.length<=1);
   window.scrollTo(0,0);
-  $('#view').innerHTML=''; fn($('#view'));
+  dirtyFn=null;
+  const v=$('#view'), nv=v.cloneNode(false); v.replaceWith(nv); fn(nv); // vista nueva sin listeners viejos
   const n=pendingRevs().length; const c=$('#revcnt'); c.textContent=n; c.classList.toggle('hide',!n);
 }
 function back(){ if(stack.length>1){stack.pop();const s=stack[stack.length-1];render(s.fn,s.title);} }
+function saveNav(n){try{localStorage.setItem('tpv-nav',JSON.stringify(n))}catch(e){}}
+function readNav(){try{return JSON.parse(localStorage.getItem('tpv-nav')||'{}')}catch(e){return {}}}
+/* Borrador: lo que se está capturando se guarda solo, para recuperarlo si Android cierra la app */
+const Draft={timer:null,collect:null,
+  touch(){ if(!this.collect)return; clearTimeout(this.timer); this.timer=setTimeout(()=>this.flush(),400); },
+  flush(){ if(!this.collect)return; clearTimeout(this.timer); try{const d=this.collect(); if(d){d.scroll=window.scrollY; DB.set('draft',d);} }catch(e){} },
+  clear(){ this.collect=null; clearTimeout(this.timer); DB.set('draft',null); }
+};
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') Draft.flush(); });
+window.addEventListener('pagehide',()=>Draft.flush());
 function setTab(tab){
-  curTab=tab; document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+  curTab=tab; saveNav({tab}); document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
   stack=[]; ({terms:()=>go(viewTerms,'Terminales'),revs:()=>go(viewRevs,'Revisiones'),cfg:()=>go(viewCfg,'Ajustes')})[tab]();
 }
 $('#back').onclick=back;
 document.querySelectorAll('nav.tabs button').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
-function confirmLeave(){ return !dirty || confirm('Tienes cambios sin guardar. ¿Salir de todos modos?'); }
-let dirty=false;
-document.querySelectorAll('nav.tabs button').forEach(b=>{const o=b.onclick;b.onclick=()=>{if(confirmLeave()){dirty=false;o()}}});
-$('#back').onclick=()=>{if(confirmLeave()){dirty=false;back()}};
+let dirty=false;      // (sin uso para avisos; se conserva por compatibilidad)
+let dirtyFn=null;     // cada formulario define cómo saber si algo cambió de verdad
+const isDirty=()=>{try{return !!(dirtyFn&&dirtyFn());}catch(e){return false;}};
+function confirmLeave(){ return !isDirty() || confirm('Tienes cambios sin guardar. ¿Salir de todos modos?'); }
+document.querySelectorAll('nav.tabs button').forEach(b=>{const o=b.onclick;b.onclick=()=>{if(confirmLeave()){dirty=false;Draft.clear();o()}}});
+$('#back').onclick=()=>{if(confirmLeave()){dirty=false;Draft.clear();back()}};
 
 /* ============ Importar Excel ============ */
 function pickFile(sel){return new Promise(res=>{const i=$(sel);i.value='';i.onchange=()=>res(i.files[0]);i.click();});}
@@ -661,11 +689,16 @@ async function importXlsx(){
       const f={}; COLS.forEach((c,k)=>f[c]=idx[k]>=0?clean(row[idx[k]]):'');
       const iI=hdr.indexOf('IMEI'); if(idx[COLS.indexOf('IMEI 1')]<0&&iI>=0){ [f['IMEI 1'],f['IMEI 2']]=splitImei(row[iI]); }
       if(!f["Ubicación"]&&!f["Número de serie"]&&!f["Afiliación Visa-Mcard"]&&!f["Afiliación Amex"]) continue;
-      list.push({id:uid(),f,verif:null});
+      const iV=hdr.indexOf('Última verificación'); let v=null;
+      if(iV>=0){ const m=String(row[iV]||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); if(m) v=`${m[3]}-${pad(m[2])}-${pad(m[1])}`; }
+      list.push({id:uid(),f,verif:v});
     }
+    // las terminales que ya existían conservan su id, su fecha de inventario y sus revisiones
+    const pool=new Map(); S.terminals.forEach(t=>{const k=termKey(t.f); if(!pool.has(k)) pool.set(k,[]); pool.get(k).push(t);});
+    let kept=0; list.forEach(n=>{ const q=pool.get(termKey(n.f)); const o=q&&q.shift(); if(o){ n.id=o.id; if(o.verif&&(!n.verif||o.verif>n.verif)) n.verif=o.verif; kept++; } });
     if(!list.length) return alert('La tabla no tiene terminales.');
-    if(S.terminals.length && !confirm(`Se encontraron ${list.length} terminales en la hoja "${sheetName}".\n\nEsto REEMPLAZA el catálogo actual (${S.terminals.length} terminales). Las revisiones ya hechas no se pierden.\n\n¿Continuar?`)) return;
-    S.terminals=list; await save('terminals');
+    if(S.terminals.length && !confirm(`Se encontraron ${list.length} terminales en la hoja "${sheetName}".\n\nEsto REEMPLAZA el catálogo actual (${S.terminals.length} terminales) con los datos del Excel. ${kept} terminales coinciden y conservan su fecha de inventario y sus revisiones.\n\n¿Continuar?`)) return;
+    S.terminals=list; relink(); await save('terminals'); await save('revisions');
     toast(`${list.length} terminales importadas`); setTab('terms');
   }catch(e){ console.error(e); alert('No se pudo leer el archivo: '+e.message); }
 }
@@ -687,7 +720,7 @@ function viewTerms(el){
     <div id="sum" class="note"></div>
     <div id="list"></div>
     <div class="card"><h2>Inventario</h2>
-      <button class="btn block" id="exp">Exportar inventario a Excel</button>
+      <div class="row"><button class="btn grow" id="exp">📤 Compartir inventario</button><button class="btn grow" id="expd">⬇ Descargar Excel</button></div>
       <button class="btn block" id="new">Agregar terminal</button>
     </div>`;
   const draw=()=>{
@@ -701,7 +734,7 @@ function viewTerms(el){
       const last=S.revisions.filter(r=>r.termId===t.id).sort((a,b)=>(b.fecha+b.hora).localeCompare(a.fecha+a.hora))[0];
       const st=(t.f.Estatus||'').toLowerCase();
       return `<button class="term" data-id="${t.id}"><div class="t1">${esc(termLabel(t))}</div><div class="t2">${esc(termSub(t))}</div>
-      <div class="t2 mono">Serie ${esc(t.f["Número de serie"]||'—')} · Afil. ${esc(t.f["Afiliación Visa-Mcard"]||t.f["Afiliación Amex"]||'—')}</div>
+      <div class="t2 mono">Serie ${esc(t.f["Número de serie"]||'—')} · ${(()=>{const a=afilSplit(t.f);return [a.vm&&a.vm!=='N/A'?'V/MC '+esc(a.vm):'',a.amex&&a.amex!=='N/A'?'Amex '+esc(a.amex):''].filter(Boolean).join(' · ')||'Sin afiliación';})()}</div>
       ${st&&st!=='activa'?`<span class="badge bad">${esc(t.f.Estatus)}</span>`:''}
       ${[t.f['IMEI 1'],t.f['IMEI 2']].some(v=>v&&!imeiOk(v))?'<span class="badge bad">IMEI por revisar</span>':''}
       ${t.verif?`<span class="badge ok">Inventario ${fmtDate(t.verif)}</span>`:'<span class="badge">Inventario sin verificar</span>'}
@@ -713,11 +746,11 @@ function viewTerms(el){
   $('#emps').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{filt.emp=c.dataset.e;$('#emps').querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x===c));draw()});
   if(hasScan) $('#scan').onclick=()=>scan(code=>{filt.q=code;$('#q').value=code;draw();
     const m=S.terminals.filter(t=>Object.values(t.f).join(' ').includes(code)); if(m.length===1) openTerm(m[0].id); else if(!m.length) toast('No se encontró: '+code,3500);});
-  $('#exp').onclick=exportInventory;
+  $('#exp').onclick=()=>exportInventory('share'); $('#expd').onclick=()=>exportInventory('download');
   $('#new').onclick=()=>go(el=>viewInv(el,null),'Nueva terminal');
   draw();
 }
-function openTerm(id){const t=S.terminals.find(x=>x.id===id);go(el=>viewTerm(el,t),t.f["Ubicación"]||'Terminal');}
+function openTerm(id){const t=S.terminals.find(x=>x.id===id);saveNav({tab:'terms',termId:id});go(el=>viewTerm(el,t),t.f["Ubicación"]||'Terminal');}
 
 /* ============ Escáner de código de barras ============ */
 async function scan(onCode){
@@ -755,7 +788,7 @@ function viewTerm(el,t){
 }
 
 /* ============ Vista: verificación de inventario ============ */
-function viewInv(el,t){
+function viewInv(el,t,draft){
   const isNew=!t; const f=isNew?Object.fromEntries(COLS.map(c=>[c,''])):t.f;
   const long=new Set(["Chip","Observaciones 1","Observaciones 2"]);
   el.innerHTML=`
@@ -768,6 +801,12 @@ function viewInv(el,t){
     const c=COLS[+inp.dataset.c]; const lab=inp.closest('label'); const ch=inp.value.trim()!==(f[c]||'');
     lab.classList.toggle('changed',ch); const w=lab.querySelector('.was'); w.classList.toggle('hide',!ch); w.textContent='Antes: '+(f[c]||'(vacío)');
   }));
+  const curVals=()=>{const vals={};inputs.forEach(i=>vals[COLS[+i.dataset.c]]=i.value.trim());return vals;};
+  const baseInv=JSON.stringify(curVals());
+  dirtyFn=()=>JSON.stringify(curVals())!==baseInv;
+  Draft.collect=()=>({kind:'inv',termId:t?t.id:null,vals:curVals()});
+  inputs.forEach(i=>i.addEventListener('input',()=>Draft.touch()));
+  if(draft&&draft.vals){ inputs.forEach(i=>{const v=draft.vals[COLS[+i.dataset.c]]; if(v!==undefined&&v!==i.value){i.value=v;i.dispatchEvent(new Event('input'));}}); }
   const chkImei=inp=>{const lab=inp.closest('label');const w=lab.querySelector('.imeiw');if(!w)return;const v=inp.value.trim();const bad=v&&!imeiOk(v);
     w.classList.toggle('hide',!bad);w.textContent=bad?`⚠ IMEI no válido: debe tener 15 dígitos con dígito verificador correcto (tiene ${v.replace(/\D/g,'').length}).`:'';};
   inputs.forEach(i=>{chkImei(i);i.addEventListener('input',()=>chkImei(i));});
@@ -785,38 +824,38 @@ function viewInv(el,t){
       t.f=nf; t.verif=today();
       if(!n) S.changes.push({fecha:ts,termId:t.id,ubic:nf["Ubicación"],serie:nf["Número de serie"],campo:'(Verificado sin cambios)',antes:'',despues:''});
     }
-    await save('terminals'); await save('changes'); dirty=false;
+    await save('terminals'); await save('changes'); dirty=false; Draft.clear();
     toast(isNew?'Terminal agregada':'Inventario confirmado'); back();
   };
 }
 
 /* ============ Vista: revisión PCI ============ */
-function afilFor(f){
-  const tipo=(f["Tipo Terminal"]||'').toLowerCase();
-  if(tipo.includes('american')&&!tipo.includes('dual')) return f["Afiliación Amex"];
-  if(tipo.includes('dual')&&f["Afiliación Amex"]) return `${f["Afiliación Visa-Mcard"]} / Amex ${f["Afiliación Amex"]}`;
-  return f["Afiliación Visa-Mcard"]||f["Afiliación Amex"];
+function afilSplit(f){ // según el Tipo de terminal: cada afiliación en su columna
+  const tipo=(f["Tipo Terminal"]||'').toLowerCase(), dual=tipo.includes('dual'), amexOnly=tipo.includes('american')&&!dual;
+  return { vm: amexOnly?'N/A':(f["Afiliación Visa-Mcard"]||''), amex: (dual||amexOnly)?(f["Afiliación Amex"]||''):'N/A' };
 }
 function headerFrom(t){
   const f=t.f; const e=S.settings.empresas[f.Empresa]||{};
   return {
     razon:e.razon||f.Empresa||'', iata:e.iata||'', dir:e.dir||'',
     linea:[f["Línea negocio"],f["Ubicación"]].filter(Boolean).join(' / '),
-    afil:afilFor(f)||'', caja:f["No. Caja"]||'',
+    tipoTerm:f["Tipo Terminal"]||'', banco:f.Banco||'', afilVM:afilSplit(f).vm, afilAmex:afilSplit(f).amex, caja:f["No. Caja"]||'',
     marca:f.Marca||'', modelo:f.Modelo||'', cant:'1', conexion:f["Conexión"]||'',
     serie:f["Número de serie"]||'', sim:f.Chip||'', imei1:f["IMEI 1"]||'', imei2:f["IMEI 2"]||''
   };
 }
-const HDR1=[['razon','Razón social'],['iata','IATA'],['dir','Dirección del comercio'],['linea','Línea de negocio'],['afil','Número de afiliación'],['caja','Número de caja']];
-const HDR2=[['marca','Marca'],['modelo','Modelo'],['cant','Cantidad solicitada'],['conexion','Tipo de conexión'],['serie','Serie'],['sim','SIM'],['imei1','IMEI 1'],['imei2','IMEI 2']];
+const HDR1=[['razon','Razón social'],['iata','IATA'],['dir','Dirección del comercio'],['linea','Línea de negocio'],['afilVM','Afiliación Visa/MC'],['afilAmex','Afiliación Amex'],['caja','Número de caja']];
+const HDR2=[['tipoTerm','Tipo de terminal'],['banco','Banco'],['marca','Marca'],['modelo','Modelo'],['cant','Cantidad solicitada'],['conexion','Tipo de conexión'],['serie','Serie'],['sim','SIM'],['imei1','IMEI 1'],['imei2','IMEI 2']];
 
-function viewRev(el,t,existing){
-  const r=existing?structuredClone(existing):{
+function viewRev(el,t,existing,draft){
+  const r=draft&&draft.r?structuredClone(draft.r):existing?structuredClone(existing):{
     id:uid(),termId:t.id,termLabel:termLabel(t),banco:t.f.Banco||'',h:headerFrom(t),tipo:S.settings.tipoDefault||TIPOS[2],
     ans:Array(QUESTIONS.length).fill(''),obs1:'',obs2:'',fecha:today(),hora:nowTime(),
-    puesto:S.settings.puesto||'',nombre:S.settings.nombre||'',firma:'',fotos:[],estado:'pendiente'
+    puesto:S.settings.puesto||'',nombre:S.settings.nombre||'',firma:(S.settings.autoFirma!==false&&S.settings.firma)||'',fotos:[],estado:'pendiente'
   };
   if(!r.h.razon && t) r.h.razon=(S.settings.empresas[t.f.Empresa]||{}).razon||'';
+  const comp=(o,firma)=>JSON.stringify({tipo:o.tipo,h:o.h,ans:o.ans,obs1:(o.obs1||'').trim(),obs2:(o.obs2||'').trim(),fecha:o.fecha,hora:o.hora,puesto:(o.puesto||'').trim(),nombre:(o.nombre||'').trim(),fotos:(o.fotos||[]).length,firma:firma});
+  const baseRev=draft?'(recuperado)':comp(r,r.firma||'');
   const fld=(k,l)=>`<label class="f"><span>${l}</span><input type="text" data-h="${k}" value="${esc(r.h[k])}"></label>`;
   el.innerHTML=`
     ${existing&&existing.estado==='enviada'?'<div class="warn" style="background:var(--chip);color:var(--muted)">Esta revisión ya fue marcada como enviada. Si la modificas regresará a pendientes.</div>':''}
@@ -848,11 +887,13 @@ function viewRev(el,t,existing){
       <label class="f"><span>Nombre de la persona que verifica</span><input type="text" id="nombre" value="${esc(r.nombre)}"></label>
       <label class="f"><span>Firma</span></label>
       <canvas class="sig" id="sig"></canvas>
-      <div class="row" style="justify-content:space-between;margin-top:6px"><span class="note">Firma con el dedo dentro del recuadro</span><button class="btn sm" id="clr">Borrar firma</button></div>
+      <div class="row" style="justify-content:space-between;margin-top:6px"><span class="note">Firma con el dedo dentro del recuadro</span>
+        <div class="row">${S.settings.firma?'<button class="btn sm" id="useSig">Usar mi firma guardada</button>':''}<button class="btn sm" id="clr">Borrar firma</button></div></div>
     </div>
     <div class="sticky-actions"><button class="btn pri block" id="saveR">Guardar revisión</button></div>
     ${existing?'<button class="btn danger block" id="del">Eliminar esta revisión</button>':''}`;
-  el.addEventListener('input',()=>dirty=true);
+  el.addEventListener('input',()=>{dirty=true;Draft.touch();});
+  el.addEventListener('click',()=>Draft.touch());
   el.querySelectorAll('[data-h]').forEach(i=>i.oninput=()=>r.h[i.dataset.h]=i.value);
   $('#tipo').querySelectorAll('button').forEach(b=>b.onclick=()=>{r.tipo=b.dataset.v;dirty=true;$('#tipo').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));});
   const paintQ=()=>{
@@ -872,9 +913,13 @@ function viewRev(el,t,existing){
   const drawPh=()=>{$('#photos').innerHTML=r.fotos.map((p,i)=>`<div class="ph"><img src="${p}"><button class="x" data-i="${i}">×</button></div>`).join('');
     $('#photos').querySelectorAll('.x').forEach(b=>b.onclick=()=>{r.fotos.splice(+b.dataset.i,1);dirty=true;drawPh();});};
   drawPh();
-  $('#addph').onclick=async()=>{const f=await pickFile('#filePhoto'); if(!f)return; if(r.fotos.length>=6) return toast('Máximo 6 fotos'); r.fotos.push(await shrink(f,1200,.72)); dirty=true; drawPh();};
+  $('#addph').onclick=async()=>{Draft.flush();const f=await pickFile('#filePhoto'); if(!f)return; if(r.fotos.length>=6) return toast('Máximo 6 fotos'); r.fotos.push(await shrink(f,1200,.72)); dirty=true; drawPh(); Draft.flush();};
   // firma
-  const sig=initSig($('#sig'),r.firma); $('#clr').onclick=()=>{sig.clear();dirty=true;};
+  const sig=initSig($('#sig'),r.firma,()=>Draft.touch()); $('#clr').onclick=()=>{sig.clear();dirty=true;Draft.touch();};
+  if($('#useSig')) $('#useSig').onclick=()=>sig.set(S.settings.firma);
+  Draft.collect=()=>({kind:'rev',termId:t.id,existing:!!existing,r:Object.assign({},r,{obs1:$('#obs1').value,obs2:$('#obs2').value,fecha:$('#fecha').value,hora:$('#hora').value,puesto:$('#puesto').value,nombre:$('#nombre').value,firma:sig.data()})});
+  const curRev=()=>Object.assign({},r,{obs1:$('#obs1').value,obs2:$('#obs2').value,fecha:$('#fecha').value,hora:$('#hora').value,puesto:$('#puesto').value,nombre:$('#nombre').value});
+  dirtyFn=()=>comp(curRev(),sig.changed()?'*':(r.firma||''))!==baseRev;
   $('#saveR').onclick=async()=>{
     r.obs1=$('#obs1').value.trim(); r.obs2=$('#obs2').value.trim(); delete r.obs; r.fecha=$('#fecha').value; r.hora=$('#hora').value; r.puesto=$('#puesto').value.trim(); r.nombre=$('#nombre').value.trim();
     r.firma=sig.data();
@@ -886,24 +931,26 @@ function viewRev(el,t,existing){
     if(a2&&!r.obs2) return alert('Hay alertas en los incisos 10 al 14. Describe el incidente en "Observaciones · incisos 10 al 14".');
     if(!r.nombre) return alert('Captura el nombre de quien verifica.');
     if(!r.firma&&!confirm('La revisión no tiene firma. ¿Guardar de todos modos?')) return;
-    r.estado='pendiente';
+    r.estado='pendiente'; r.mod=Date.now();
     const k=S.revisions.findIndex(x=>x.id===r.id); if(k>=0) S.revisions[k]=r; else S.revisions.push(r);
     if(!S.settings.nombre||!S.settings.puesto){S.settings.nombre=S.settings.nombre||r.nombre;S.settings.puesto=S.settings.puesto||r.puesto;await save('settings');}
-    await save('revisions'); dirty=false; toast('Revisión guardada'); back();
+    await save('revisions'); dirty=false; Draft.clear(); toast('Revisión guardada'); back();
   };
-  if(existing) $('#del').onclick=async()=>{ if(!confirm('¿Eliminar esta revisión?'))return; S.revisions=S.revisions.filter(x=>x.id!==r.id); await save('revisions'); dirty=false; back(); };
+  if(existing) $('#del').onclick=async()=>{ if(!confirm('¿Eliminar esta revisión?'))return; S.revisions=S.revisions.filter(x=>x.id!==r.id); await save('revisions'); dirty=false; Draft.clear(); back(); };
 }
 function shrink(file,max,q){return new Promise((res,rej)=>{const img=new Image();const u=URL.createObjectURL(file);img.onload=()=>{const s=Math.min(1,max/Math.max(img.width,img.height));const c=document.createElement('canvas');c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);c.getContext('2d').drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(u);res(c.toDataURL('image/jpeg',q));};img.onerror=rej;img.src=u;});}
-function initSig(cv,initial){
-  let has=!!initial; const ctx=cv.getContext('2d'); let drawing=false,last=null;
-  const fit=()=>{const r=cv.getBoundingClientRect();const d=window.devicePixelRatio||1;const prev=has?cv.toDataURL():initial;cv.width=r.width*d;cv.height=r.height*d;ctx.setTransform(d,0,0,d,0,0);ctx.lineWidth=2.4;ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle='#0d1b2e';
-    if(prev){const im=new Image();im.onload=()=>ctx.drawImage(im,0,0,r.width,r.height);im.src=prev;}};
+function initSig(cv,initial,onChange){
+  let has=!!initial; const ctx=cv.getContext('2d'); let drawing=false,last=null,fitted=false,changed=false,moved=false;
+  const fit=()=>{const r=cv.getBoundingClientRect();const d=window.devicePixelRatio||1;const prev=(fitted&&has)?cv.toDataURL():initial;fitted=true;cv.width=r.width*d;cv.height=r.height*d;ctx.setTransform(d,0,0,d,0,0);ctx.lineWidth=2.4;ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle='#0d1b2e';
+    if(prev) drawFit(prev,r);};
+  const drawFit=(url,r)=>{r=r||cv.getBoundingClientRect();const im=new Image();im.onload=()=>{const k=Math.min(r.width/im.width,r.height/im.height);const w=im.width*k,h=im.height*k;ctx.drawImage(im,(r.width-w)/2,(r.height-h)/2,w,h);};im.src=url;};
   setTimeout(fit,0);
   const pos=e=>{const r=cv.getBoundingClientRect();return {x:e.clientX-r.left,y:e.clientY-r.top}};
-  cv.onpointerdown=e=>{drawing=true;last=pos(e);cv.setPointerCapture(e.pointerId);ctx.beginPath();ctx.arc(last.x,last.y,1.1,0,7);ctx.fillStyle='#0d1b2e';ctx.fill();has=true;dirty=true;};
-  cv.onpointermove=e=>{if(!drawing)return;const p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;};
-  cv.onpointerup=cv.onpointercancel=()=>drawing=false;
-  return {clear(){ctx.clearRect(0,0,cv.width,cv.height);has=false;initial='';},data(){return has?cv.toDataURL('image/png'):''}};
+  cv.onpointerdown=e=>{drawing=true;moved=false;last=pos(e);cv.setPointerCapture(e.pointerId);};
+  cv.onpointermove=e=>{if(!drawing)return;const p=pos(e);if(!moved&&Math.hypot(p.x-last.x,p.y-last.y)<3)return;moved=true;has=true;changed=true;ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;};
+  cv.onpointerup=cv.onpointercancel=()=>{if(drawing&&moved&&onChange)onChange();drawing=false;};
+  return {set(url){ctx.clearRect(0,0,cv.width,cv.height);if(url){drawFit(url);has=true;}else has=false;changed=true;initial='';onChange&&onChange();},
+    clear(){ctx.clearRect(0,0,cv.width,cv.height);if(has||initial)changed=true;has=false;initial='';},data(){return has?cv.toDataURL('image/png'):''},changed:()=>changed};
 }
 
 /* ============ Vista: Revisiones ============ */
@@ -919,11 +966,13 @@ function viewRevs(el){
       ${pend.length?pend.map(item).join(''):'<div class="note">No hay revisiones pendientes. Haz una desde Terminales.</div>'}
     </div>
     <div class="card"><h2>Generar y enviar</h2>
-      <div class="note">Se usan las revisiones seleccionadas. En el teléfono se abre el menú Compartir (correo, Outlook, OneDrive, WhatsApp…); en la PC se descargan.</div>
+      <div class="note">Se usan las revisiones seleccionadas. Primero se generan los archivos y después eliges compartir (WhatsApp, Teams, Telegram, correo…) o descargar.</div>
       <label class="check" style="margin:8px 0"><input type="checkbox" id="oneFile" checked><span>Un solo PDF con todas (una hoja por terminal)</span></label>
       <label class="check" style="margin:8px 0"><input type="checkbox" id="withX" checked><span>Incluir Excel resumen</span></label>
       <label class="check" style="margin:8px 0"><input type="checkbox" id="withInv"><span>Incluir Excel de inventario actualizado</span></label>
-      <button class="btn acc block" id="send">Generar PDF y compartir</button>
+      <label class="check" style="margin:8px 0"><input type="checkbox" id="withData"><span>Incluir archivo de datos para la PC (.txt) — en la PC lo importas y descargas ahí el Excel con formato</span></label>
+      <button class="btn acc block" id="send">Generar archivos</button>
+      <div id="out"></div>
       <button class="btn block" id="mark">Marcar seleccionadas como enviadas</button>
     </div>
     <div class="card"><h2>Historial enviado (${sent.length})</h2>
@@ -931,34 +980,93 @@ function viewRevs(el){
     </div>`;
   el.querySelectorAll('[data-open]').forEach(d=>d.onclick=()=>{const r=S.revisions.find(x=>x.id===d.dataset.open);const t=S.terminals.find(x=>x.id===r.termId)||{id:r.termId,f:{}};go(e=>viewRev(e,t,r),'Revisión PCI');});
   const selected=()=>[...el.querySelectorAll('.sel:checked')].map(c=>S.revisions.find(r=>r.id===c.dataset.id)).sort((a,b)=>(a.fecha+a.hora).localeCompare(b.fecha+b.hora));
+  try{const o=JSON.parse(localStorage.getItem('tpv-opts')||'{}');for(const k in o){const c=$('#'+k);if(c)c.checked=o[k];}}catch(e){}
   if($('#tog')) $('#tog').onclick=()=>{showSent=!showSent;render(viewRevs,'Revisiones');};
   $('#send').onclick=async()=>{
     const sel=selected(); if(!sel.length) return alert('Selecciona al menos una revisión.');
-    const btn=$('#send'); btn.disabled=true; btn.textContent='Generando…';
+    const btn=$('#send'); btn.disabled=true; btn.textContent='Generando…'; $('#out').innerHTML='';
+    await new Promise(r=>setTimeout(r,30));
     try{
       const files=[]; const stamp=today();
       if($('#oneFile').checked) files.push(new File([pdfFor(sel).output('blob')],`Revision_TPV_PCI_${stamp}.pdf`,{type:'application/pdf'}));
       else sel.forEach(r=>files.push(new File([pdfFor([r]).output('blob')],`Revision_TPV_${(r.h.linea||'').replace(/[^\w-]+/g,'_')}_${r.h.serie||r.id}_${r.fecha}.pdf`,{type:'application/pdf'})));
       if($('#withX').checked) files.push(xlsxFile(summaryWb(sel),`Resumen_revisiones_TPV_${stamp}.xlsx`));
       if($('#withInv').checked) files.push(xlsxFile(inventoryWb(),`Inventario_TPV_${stamp}.xlsx`));
-      const shared=await shareFiles(files,`Revisión TPV PCI ${fmtDate(stamp)}`,`Revisión física de terminales punto de venta (PCI DSS) — ${sel.length} terminal(es).`);
-      if(shared!=='cancel' && confirm('¿Marcar estas revisiones como enviadas?')){ sel.forEach(r=>r.estado='enviada'); await save('revisions'); render(viewRevs,'Revisiones'); }
+      if($('#withData').checked) files.push(dataFile());
+      try{localStorage.setItem('tpv-opts',JSON.stringify({oneFile:$('#oneFile').checked,withX:$('#withX').checked,withInv:$('#withInv').checked,withData:$('#withData').checked}));}catch(e){}
+      const nAl=sel.filter(r=>r.alertas).length;
+      const title=`Revisión TPV PCI ${fmtDate(stamp)}`;
+      const text=`Revisión física de terminales punto de venta (PCI DSS) del ${fmtDate(stamp)}: ${sel.length} terminal(es)${nAl?`, ${nAl} con alertas`:', sin alertas'}.`;
+      const kb=f=>f.size>1048576?(f.size/1048576).toFixed(1)+' MB':Math.max(1,Math.round(f.size/1024))+' KB';
+      $('#out').innerHTML=`<div class="card" style="background:var(--bg);margin:12px 0 4px">
+        ${files.map(f=>`<div class="mono" style="margin:3px 0">📄 ${esc(f.name)} <span class="note">(${kb(f)})</span></div>`).join('')}
+        <button class="btn acc block" id="doShare">📤 Compartir (WhatsApp, Teams, Telegram, correo…)</button>
+        <button class="btn block" id="doDl">⬇ Descargar</button></div>`;
+      const after=async res=>{ if(res!=='cancel' && confirm('¿Marcar estas revisiones como enviadas?')){ sel.forEach(r=>{r.estado='enviada';r.mod=Date.now();}); await save('revisions'); render(viewRevs,'Revisiones'); } };
+      $('#doShare').onclick=async()=>after(await shareFiles(files,title,text,'share'));
+      $('#doDl').onclick=async()=>after(await shareFiles(files,title,text,'download'));
+      $('#out').scrollIntoView({behavior:'smooth',block:'center'});
     }catch(e){console.error(e);alert('Error al generar: '+e.message);}
-    finally{ if(document.body.contains(btn)){btn.disabled=false;btn.textContent='Generar PDF y compartir';} }
+    finally{ if(document.body.contains(btn)){btn.disabled=false;btn.textContent=$('#out').innerHTML?'Volver a generar':'Generar archivos';btn.classList.toggle('acc',!$('#out').innerHTML);} }
   };
   $('#mark').onclick=async()=>{const sel=selected(); if(!sel.length)return; sel.forEach(r=>r.estado='enviada'); await save('revisions'); render(viewRevs,'Revisiones');};
 }
 
 /* ============ Compartir / descargar ============ */
-async function shareFiles(files,title,text){
-  if(navigator.canShare && navigator.canShare({files})){
-    try{ await navigator.share({files,title,text}); return 'shared'; }
-    catch(e){ if(e.name==='AbortError') return 'cancel'; }
-  }
-  files.forEach((f,i)=>setTimeout(()=>{const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},4000);},i*400));
-  toast('Archivos descargados'); return 'download';
+function dataFile(){
+  const d=new Date(); const data={app:'tpv-pci',v:2,fecha:d.toISOString(),terminals:S.terminals,revisions:S.revisions,changes:S.changes,settings:S.settings};
+  return new File([JSON.stringify(data)],`Datos_TPV_PCI_${today()}_${pad(d.getHours())}${pad(d.getMinutes())}.txt`,{type:'text/plain'});
 }
-function xlsxFile(wb,name){const out=XLSX.write(wb,{bookType:'xlsx',type:'array'});return new File([out],name,{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});}
+function choose(msg,opts){return new Promise(res=>{const m=document.createElement('div');m.className='modal';
+  m.innerHTML=`<div class="card" style="max-width:440px;width:100%"><div style="white-space:pre-line;margin-bottom:6px">${esc(msg)}</div>${opts.map((o,i)=>`<button class="btn block ${o.cls||''}" data-i="${i}">${esc(o.t)}</button>`).join('')}</div>`;
+  document.body.appendChild(m); m.querySelectorAll('button').forEach(b=>b.onclick=()=>{m.remove();res(opts[+b.dataset.i].v);});});}
+async function importData(){
+  const f=await pickFile('#fileJson'); if(!f) return;
+  let d; try{ d=JSON.parse(await f.text()); if(d.app!=='tpv-pci') throw 0; }catch(e){ return alert('Este archivo no es de datos de la app TPV PCI.'); }
+  const msg=`Archivo del ${new Date(d.fecha).toLocaleString()}\n${d.terminals.length} terminales · ${d.revisions.length} revisiones\n\n• Combinar: agrega las revisiones del archivo a las de este equipo (sin duplicar) y toma el catálogo de terminales del archivo.\n• Reemplazar todo: este equipo queda igual que el archivo.`;
+  const how=await choose(msg,[{t:'Combinar (recomendado)',v:'merge',cls:'pri'},{t:'Reemplazar todo',v:'replace'},{t:'Cancelar',v:null}]);
+  if(!how) return;
+  const inc={terminals:d.terminals||[],revisions:d.revisions||[],changes:d.changes||[]};
+  if(how==='replace'){
+    if(!confirm('Se borrarán los datos actuales de este equipo y se reemplazarán por los del archivo. ¿Continuar?')) return;
+    Object.assign(S,inc,{settings:Object.assign(structuredClone(DEFAULT_SETTINGS),d.settings||{})});
+  }else{
+    const byId=new Map(S.revisions.map(r=>[r.id,r])); let nNew=0,nUpd=0;
+    inc.revisions.forEach(r=>{const e=byId.get(r.id); if(!e){byId.set(r.id,r);nNew++;} else if((r.mod||0)>(e.mod||0)){byId.set(r.id,r);nUpd++;}});
+    S.revisions=[...byId.values()];
+    if(inc.terminals.length) S.terminals=inc.terminals;
+    const key=c=>[c.fecha,c.termId,c.campo,c.despues].join('|'); const seen=new Set(S.changes.map(key));
+    inc.changes.forEach(c=>{if(!seen.has(key(c))){S.changes.push(c);seen.add(key(c));}});
+    toast(`${nNew} revisiones nuevas, ${nUpd} actualizadas`,4000);
+  }
+  migrate(); for(const k of ['terminals','revisions','changes','settings']) await save(k);
+  setTab('revs');
+}
+function downloadFiles(files){
+  files.forEach((f,i)=>setTimeout(()=>{const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},4000);},i*400));
+}
+function wbToCsv(wb,name){ // Android no permite compartir .xlsx; el CSV sí y Excel lo abre igual
+  const base=name.replace(/\.xlsx$/i,''); const many=wb.SheetNames.length>1;
+  return wb.SheetNames.map(n=>new File(['\ufeff'+XLSX.utils.sheet_to_csv(wb.Sheets[n])],`${base}${many?'_'+n:''}.csv`,{type:'text/csv'}));
+}
+async function shareFiles(files,title,text,mode='share'){
+  if(mode==='download'){ downloadFiles(files); toast('Archivos descargados'); return 'download'; }
+  if(!navigator.share){ downloadFiles(files); alert('Este navegador no permite compartir directamente; los archivos se descargaron.'); return 'download'; }
+  const can=f=>{try{return !!(navigator.canShare&&navigator.canShare({files:[f]}));}catch(e){return false;}};
+  let ok=[],rest=[],conv=false;
+  for(const f of files){
+    if(can(f)) ok.push(f);
+    else if(f._wb){ const c=wbToCsv(f._wb,f.name); if(c.every(can)){ok.push(...c);conv=true;} else rest.push(f); }
+    else rest.push(f);
+  }
+  if(!ok.length){ downloadFiles(files); alert('Estos archivos no se pueden compartir desde el navegador; se descargaron.'); return 'download'; }
+  try{ await navigator.share({files:ok,title,text}); }
+  catch(e){ if(e.name==='AbortError') return 'cancel'; downloadFiles(files); alert('No se pudo abrir el menú Compartir ('+e.name+'); los archivos se descargaron.'); return 'download'; }
+  if(rest.length){ downloadFiles(rest); toast('Algunos archivos se guardaron en Descargas',3500); }
+  if(conv) toast('El Excel se compartió como CSV (se abre en Excel). Si lo necesitas en .xlsx usa Descargar.',5000);
+  return 'shared';
+}
+function xlsxFile(wb,name){const out=XLSX.write(wb,{bookType:'xlsx',type:'array'});const f=new File([out],name,{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});f._wb=wb;return f;}
 
 /* ============ Excel: inventario y resumen ============ */
 function inventoryWb(){
@@ -973,7 +1081,7 @@ function inventoryWb(){
   XLSX.utils.book_append_sheet(wb,ws2,'Cambios');
   return wb;
 }
-async function exportInventory(){ await shareFiles([xlsxFile(inventoryWb(),`Inventario_TPV_${today()}.xlsx`)],'Inventario TPV','Inventario de terminales punto de venta'); }
+async function exportInventory(mode){ await shareFiles([xlsxFile(inventoryWb(),`Inventario_TPV_${today()}.xlsx`)],'Inventario TPV',`Inventario de terminales punto de venta al ${fmtDate(today())}`,mode); }
 function summaryWb(revs){
   const wb=XLSX.utils.book_new();
   const head=['Fecha','Hora','Tipo de solicitud',...HDR1.map(x=>x[1]),...HDR2.map(x=>x[1]),...QUESTIONS.map((q,i)=>`${i+1}) ${q}`),'Alertas','Observaciones incisos 1-9','Observaciones incisos 10-14','Puesto','Verificó','Firma'];
@@ -1024,10 +1132,10 @@ function pagePdf(doc,r){
   doc.text('Inciso',M+2,y+3.5);['Sí','No','N/A'].forEach((a,i)=>doc.text(a,colX[i]+6.5,y+3.5,{align:'center'}));y+=5;
   QUESTIONS.forEach((q,i)=>{
     doc.setFontSize(8.8);
-    const lines=doc.splitTextToSize(`${i+1})  ${q}`,cA-4); const h=Math.max(5.6,lines.length*3.6+2); const al=isAlert(i,r.ans[i]);
+    const lines=doc.splitTextToSize(`${i+1})  ${q}`,cA-4); const h=Math.max(5.1,lines.length*3.5+1.7); const al=isAlert(i,r.ans[i]);
     if(al){doc.setFillColor(...REDBG);doc.rect(M,y,CW,h,'F');}
     doc.setDrawColor(...LINE);doc.rect(M,y,cA,h);colX.forEach(x=>doc.rect(x,y,13,h));
-    doc.setFont('helvetica',al?'bold':'normal');doc.setTextColor(...(al?RED:[20,20,20]));doc.text(lines,M+2,y+3.9);
+    doc.setFont('helvetica',al?'bold':'normal');doc.setTextColor(...(al?RED:[20,20,20]));doc.text(lines,M+2,y+3.6);
     const k=['Sí','No','N/A'].indexOf(r.ans[i]); if(k>=0){doc.setFont('helvetica','bold');doc.setFontSize(11);doc.text('X',colX[k]+6.5,y+h/2+1.5,{align:'center'});}
     y+=h;});
   y+=3;
@@ -1048,7 +1156,7 @@ function pagePdf(doc,r){
   doc.setFontSize(9);
   [['Fecha',fmtDate(r.fecha)],['Hora',r.hora],['Puesto',r.puesto],['Verificó',r.nombre]].forEach(([l,v],i)=>{
     doc.setFont('helvetica','bold');doc.setTextColor(...GRAY);doc.text(l+':',M+2,y+5+i*5.3);doc.setFont('helvetica','normal');doc.setTextColor(20);doc.text(doc.splitTextToSize(String(v||''),lw-26)[0]||'',M+22,y+5+i*5.3);});
-  if(r.firma){try{doc.addImage(r.firma,'PNG',M+lw+4,y+1.5,CW-lw-8,fh-8);}catch(e){}}
+  if(r.firma){try{const p=doc.getImageProperties(r.firma);const bw=CW-lw-8,bh=fh-8;const k=Math.min(bw/p.width,bh/p.height);const w=p.width*k,h=p.height*k;doc.addImage(r.firma,'PNG',M+lw+4+(bw-w)/2,y+1.5+(bh-h)/2,w,h);}catch(e){}}
   doc.setDrawColor(120);doc.line(M+lw+6,y+fh-5.5,W-M-6,y+fh-5.5);
   doc.setFontSize(7.5);doc.setTextColor(...GRAY);doc.text('Firma de la persona que verifica',M+lw+(CW-lw)/2,y+fh-2,{align:'center'});
   // fotos
@@ -1072,6 +1180,13 @@ function viewCfg(el){
       <label class="f"><span>Puesto</span><input type="text" id="cPuesto" value="${esc(st.puesto)}"></label>
       <label class="f"><span>Tipo de solicitud por omisión</span><select id="cTipo">${TIPOS.map(t=>`<option ${st.tipoDefault===t?'selected':''}>${t}</option>`).join('')}</select></label>
     </div>
+    <div class="card"><h2>Mi firma</h2>
+      <div class="note">Dibuja tu firma una vez (o carga una foto de tu firma sobre papel blanco) y guárdala. Se inserta sola en cada revisión nueva; siempre puedes borrarla y firmar a mano.</div>
+      <canvas class="sig" id="mySig" style="margin-top:8px"></canvas>
+      <div class="row" style="margin-top:8px"><button class="btn sm pri" id="sigSave">Guardar firma</button><button class="btn sm" id="sigImg">Cargar imagen</button><button class="btn sm danger" id="sigDel">Borrar</button></div>
+      <label class="check" style="margin-top:10px"><input type="checkbox" id="autoFirma" ${st.autoFirma!==false?'checked':''}><span>Insertar mi firma automáticamente en cada revisión nueva</span></label>
+      <div class="note" id="sigState">${st.firma?'✓ Tienes una firma guardada.':'Aún no tienes firma guardada.'}</div>
+    </div>
     <div class="card"><h2>Empresas (encabezado del Check List)</h2>
       <div class="note">La clave es la columna "Empresa" del inventario.</div>
       <div id="emps"></div>
@@ -1091,13 +1206,13 @@ function viewCfg(el){
       <div class="note">${S.terminals.length} terminales en este dispositivo.</div>
       <button class="btn block" id="imp">Importar Excel de inventario (reemplaza)</button>
     </div>
-    <div class="card"><h2>Respaldo</h2>
-      <div class="note">Los datos viven solo en este dispositivo. Haz un respaldo de vez en cuando o para pasar todo a otro teléfono o a la PC.</div>
-      <button class="btn block" id="bk">Crear respaldo (.json)</button>
-      <button class="btn block" id="rs">Restaurar respaldo</button>
+    <div class="card"><h2>Datos: intercambio con la PC y respaldo</h2>
+      <div class="note">Los datos viven solo en este equipo. El archivo de datos (.txt) lleva todo: terminales, revisiones con firmas y fotos, y bitácora de cambios. Sirve para pasar la información a la PC (o de la PC al teléfono) y como respaldo.</div>
+      <div class="row"><button class="btn grow" id="bk">📤 Compartir datos</button><button class="btn grow" id="bkd">⬇ Descargar datos</button></div>
+      <button class="btn block" id="rs">Importar archivo de datos</button>
       <button class="btn danger block" id="wipe">Borrar todos los datos</button>
     </div>
-    <div class="note" style="text-align:center">Revisión TPV PCI · v1.2 · funciona sin conexión</div>`;
+    <div class="note" style="text-align:center">Revisión TPV PCI · v1.7 · funciona sin conexión</div>`;
   const drawEmps=()=>{$('#emps').innerHTML=Object.entries(st.empresas).map(([k,e])=>`<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:4px" data-k="${esc(k)}">
     <label class="f"><span>Clave</span><input type="text" data-x="k" value="${esc(k)}"></label>
     <label class="f"><span>Razón social</span><input type="text" data-x="razon" value="${esc(e.razon)}"></label>
@@ -1112,23 +1227,44 @@ function viewCfg(el){
   el.querySelectorAll('[data-bl]').forEach(b=>b.onclick=async()=>{const f=await pickFile('#fileLogo');if(!f)return;st.bankLogos[b.dataset.bl]=await shrinkPng(f,500);await save('settings');render(viewCfg,'Ajustes');});
   el.querySelectorAll('[data-blx]').forEach(b=>b.onclick=async()=>{delete st.bankLogos[b.dataset.blx];await save('settings');render(viewCfg,'Ajustes');});
   $('#imp').onclick=importXlsx;
-  $('#bk').onclick=()=>{const data={app:'tpv-pci',v:1,fecha:new Date().toISOString(),terminals:S.terminals,revisions:S.revisions,changes:S.changes,settings:S.settings};
-    shareFiles([new File([JSON.stringify(data)],`Respaldo_TPV_PCI_${today()}.json`,{type:'application/json'})],'Respaldo TPV PCI','');};
-  $('#rs').onclick=async()=>{const f=await pickFile('#fileJson');if(!f)return;try{const d=JSON.parse(await f.text());if(d.app!=='tpv-pci')throw new Error('No es un respaldo de esta app');
-    if(!confirm(`Restaurar respaldo del ${new Date(d.fecha).toLocaleString()}?\n${d.terminals.length} terminales, ${d.revisions.length} revisiones.\n\nReemplaza los datos actuales.`))return;
-    Object.assign(S,{terminals:d.terminals,revisions:d.revisions,changes:d.changes||[],settings:Object.assign(structuredClone(DEFAULT_SETTINGS),d.settings)});
-    migrate(); for(const k of ['terminals','revisions','changes','settings']) await save(k); toast('Respaldo restaurado'); setTab('terms');}catch(e){alert('No se pudo restaurar: '+e.message);}};
+  const my=initSig($('#mySig'),st.firma||'');
+  $('#sigSave').onclick=async()=>{const d=my.data(); if(!d) return alert('Dibuja tu firma en el recuadro o carga una imagen.'); st.firma=await trimSig(d); await save('settings'); $('#sigState').textContent='✓ Firma guardada.'; toast('Firma guardada');};
+  $('#sigImg').onclick=async()=>{const f=await pickFile('#fileLogo'); if(!f)return; my.set(await shrinkPng(f,900));};
+  $('#sigDel').onclick=async()=>{if(st.firma&&!confirm('¿Borrar tu firma guardada?'))return; my.clear(); st.firma=''; await save('settings'); $('#sigState').textContent='Aún no tienes firma guardada.';};
+  $('#autoFirma').onchange=async e=>{st.autoFirma=e.target.checked; await save('settings');};
+  $('#bk').onclick=()=>shareFiles([dataFile()],'Datos TPV PCI',`Datos de la app Revisión TPV PCI al ${fmtDate(today())}`,'share');
+  $('#bkd').onclick=()=>shareFiles([dataFile()],'Datos TPV PCI','','download');
+  $('#rs').onclick=importData;
   $('#wipe').onclick=async()=>{if(!confirm('¿Borrar TODO (terminales, revisiones, ajustes) de este dispositivo?'))return;if(prompt('Escribe BORRAR para confirmar')!=='BORRAR')return;
     Object.assign(S,{terminals:[],revisions:[],changes:[],settings:structuredClone(DEFAULT_SETTINGS)});for(const k of ['terminals','revisions','changes','settings']) await save(k);setTab('terms');};
 }
 function banks(){return [...new Set(['HSBC',...S.terminals.map(t=>t.f.Banco).filter(Boolean),...Object.keys(S.settings.bankLogos)])];}
 function bankOf(r){const t=S.terminals.find(x=>x.id===r.termId);return r.banco||(t&&t.f.Banco)||'';}
+function trimSig(url){return new Promise(res=>{const im=new Image();im.onload=()=>{const c=document.createElement('canvas');c.width=im.width;c.height=im.height;const x=c.getContext('2d');x.drawImage(im,0,0);
+  const d=x.getImageData(0,0,c.width,c.height).data;let t=c.height,l=c.width,b=0,r=0;
+  for(let y=0;y<c.height;y++)for(let i=0;i<c.width;i++){const k=(y*c.width+i)*4;const ink=d[k+3]>20&&(d[k]+d[k+1]+d[k+2])<600;if(ink){if(y<t)t=y;if(y>b)b=y;if(i<l)l=i;if(i>r)r=i;}}
+  if(b<t)return res(url);const m=8;l=Math.max(0,l-m);t=Math.max(0,t-m);r=Math.min(c.width-1,r+m);b=Math.min(c.height-1,b+m);
+  const o=document.createElement('canvas');o.width=r-l+1;o.height=b-t+1;o.getContext('2d').drawImage(c,l,t,o.width,o.height,0,0,o.width,o.height);res(o.toDataURL('image/png'));};im.src=url;});}
 function shrinkPng(file,max){return new Promise((res,rej)=>{const img=new Image();const u=URL.createObjectURL(file);img.onload=()=>{const s=Math.min(1,max/Math.max(img.width,img.height));const c=document.createElement('canvas');c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);c.getContext('2d').drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(u);res(c.toDataURL('image/png'));};img.onerror=rej;img.src=u;});}
 
 /* ============ Inicio ============ */
-window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{if(isDirty()){e.preventDefault();e.returnValue='';}});
 if('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(()=>{});
-load().then(()=>setTab('terms'));
+load().then(async()=>{
+  const d=await DB.get('draft'); const nav=readNav();
+  if(d&&d.kind){
+    setTab('terms');
+    const t=d.termId?S.terminals.find(x=>x.id===d.termId):null;
+    if(t) openTerm(t.id);
+    if(d.kind==='inv') go(el=>viewInv(el,t,d),t?'Inventario':'Nueva terminal');
+    else { const ex=d.existing?S.revisions.find(x=>x.id===d.r.id):null; go(el=>viewRev(el,t||{id:d.termId,f:{}},ex,d),'Revisión PCI'); }
+    setTimeout(()=>window.scrollTo(0,d.scroll||0),80);
+    toast('Se recuperó la captura que tenías en curso',3500);
+  }else{
+    setTab(nav.tab||'terms');
+    if(nav.tab==='terms'&&nav.termId&&S.terminals.some(x=>x.id===nav.termId)) openTerm(nav.termId);
+  }
+});
 </script>
 </body>
 </html>
