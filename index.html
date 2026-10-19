@@ -635,16 +635,16 @@ const pendingRevs=()=>S.revisions.filter(r=>r.estado!=='enviada');
 /* ============ Navegación ============ */
 let stack=[]; // pantallas para "regresar"
 let curTab='terms';
-function go(fn,title,push=true){ if(push) stack.push({fn,title}); render(fn,title); }
+function go(fn,title,push=true){ if(push){ if(stack.length) stack[stack.length-1].y=window.scrollY; stack.push({fn,title}); } render(fn,title); }
 function render(fn,title){
   $('#title').textContent=title||'Revisión TPV PCI';
   $('#back').classList.toggle('hide',stack.length<=1);
   window.scrollTo(0,0);
-  dirtyFn=null;
+  dirtyFn=null; onVisibleDT=null;
   const v=$('#view'), nv=v.cloneNode(false); v.replaceWith(nv); fn(nv); // vista nueva sin listeners viejos
   const n=pendingRevs().length; const c=$('#revcnt'); c.textContent=n; c.classList.toggle('hide',!n);
 }
-function back(){ if(stack.length>1){stack.pop();const s=stack[stack.length-1];render(s.fn,s.title);} }
+function back(){ if(stack.length>1){stack.pop();const s=stack[stack.length-1];render(s.fn,s.title);const y=s.y||0;window.scrollTo(0,y);requestAnimationFrame(()=>window.scrollTo(0,y));} }
 function saveNav(n){try{localStorage.setItem('tpv-nav',JSON.stringify(n))}catch(e){}}
 function readNav(){try{return JSON.parse(localStorage.getItem('tpv-nav')||'{}')}catch(e){return {}}}
 /* Borrador: lo que se está capturando se guarda solo, para recuperarlo si Android cierra la app */
@@ -662,7 +662,8 @@ function setTab(tab){
 $('#back').onclick=back;
 document.querySelectorAll('nav.tabs button').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 let dirty=false;      // (sin uso para avisos; se conserva por compatibilidad)
-let dirtyFn=null;     // cada formulario define cómo saber si algo cambió de verdad
+let dirtyFn=null;
+let onVisibleDT=null; document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'&&onVisibleDT) onVisibleDT(); });     // cada formulario define cómo saber si algo cambió de verdad
 const isDirty=()=>{try{return !!(dirtyFn&&dirtyFn());}catch(e){return false;}};
 function confirmLeave(){ return !isDirty() || confirm('Tienes cambios sin guardar. ¿Salir de todos modos?'); }
 document.querySelectorAll('nav.tabs button').forEach(b=>{const o=b.onclick;b.onclick=()=>{if(confirmLeave()){dirty=false;Draft.clear();o()}}});
@@ -720,7 +721,8 @@ function viewTerms(el){
     <div id="sum" class="note"></div>
     <div id="list"></div>
     <div class="card"><h2>Inventario</h2>
-      <div class="row"><button class="btn grow" id="exp">📤 Compartir inventario</button><button class="btn grow" id="expd">⬇ Descargar Excel</button></div>
+      <button class="btn block" id="expd">⬇ Descargar inventario en Excel</button>
+      <div class="note">Android no permite compartir Excel directo desde la app: después de descargarlo, compártelo desde la notificación de descarga o desde Archivos &gt; Descargas.</div>
       <button class="btn block" id="new">Agregar terminal</button>
     </div>`;
   const draw=()=>{
@@ -746,7 +748,7 @@ function viewTerms(el){
   $('#emps').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{filt.emp=c.dataset.e;$('#emps').querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x===c));draw()});
   if(hasScan) $('#scan').onclick=()=>scan(code=>{filt.q=code;$('#q').value=code;draw();
     const m=S.terminals.filter(t=>Object.values(t.f).join(' ').includes(code)); if(m.length===1) openTerm(m[0].id); else if(!m.length) toast('No se encontró: '+code,3500);});
-  $('#exp').onclick=()=>exportInventory('share'); $('#expd').onclick=()=>exportInventory('download');
+  $('#expd').onclick=()=>exportInventory('download');
   $('#new').onclick=()=>go(el=>viewInv(el,null),'Nueva terminal');
   draw();
 }
@@ -854,7 +856,10 @@ function viewRev(el,t,existing,draft){
     puesto:S.settings.puesto||'',nombre:S.settings.nombre||'',firma:(S.settings.autoFirma!==false&&S.settings.firma)||'',fotos:[],estado:'pendiente'
   };
   if(!r.h.razon && t) r.h.razon=(S.settings.empresas[t.f.Empresa]||{}).razon||'';
-  const comp=(o,firma)=>JSON.stringify({tipo:o.tipo,h:o.h,ans:o.ans,obs1:(o.obs1||'').trim(),obs2:(o.obs2||'').trim(),fecha:o.fecha,hora:o.hora,puesto:(o.puesto||'').trim(),nombre:(o.nombre||'').trim(),fotos:(o.fotos||[]).length,firma:firma});
+  const isNewRev=!existing&&!(draft&&draft.existing);
+  let manualDT=!!(draft&&draft.manualDT);           // true solo si el usuario cambió la fecha/hora a mano
+  const f0=r.fecha,h0=r.hora;
+  const comp=(o,firma)=>JSON.stringify({tipo:o.tipo,h:o.h,ans:o.ans,obs1:(o.obs1||'').trim(),obs2:(o.obs2||'').trim(),puesto:(o.puesto||'').trim(),nombre:(o.nombre||'').trim(),fotos:(o.fotos||[]).length,firma:firma});
   const baseRev=draft?'(recuperado)':comp(r,r.firma||'');
   const fld=(k,l)=>`<label class="f"><span>${l}</span><input type="text" data-h="${k}" value="${esc(r.h[k])}"></label>`;
   el.innerHTML=`
@@ -883,6 +888,7 @@ function viewRev(el,t,existing,draft){
     <div class="card"><h2>Verificó</h2>
       <div class="row"><label class="f grow"><span>Fecha</span><input type="date" id="fecha" value="${esc(r.fecha)}"></label>
       <label class="f grow"><span>Hora</span><input type="time" id="hora" value="${esc(r.hora)}"></label></div>
+      <div class="note" id="dtNote"></div>
       <label class="f"><span>Puesto</span><input type="text" id="puesto" value="${esc(r.puesto)}"></label>
       <label class="f"><span>Nombre de la persona que verifica</span><input type="text" id="nombre" value="${esc(r.nombre)}"></label>
       <label class="f"><span>Firma</span></label>
@@ -917,11 +923,18 @@ function viewRev(el,t,existing,draft){
   // firma
   const sig=initSig($('#sig'),r.firma,()=>Draft.touch()); $('#clr').onclick=()=>{sig.clear();dirty=true;Draft.touch();};
   if($('#useSig')) $('#useSig').onclick=()=>sig.set(S.settings.firma);
-  Draft.collect=()=>({kind:'rev',termId:t.id,existing:!!existing,r:Object.assign({},r,{obs1:$('#obs1').value,obs2:$('#obs2').value,fecha:$('#fecha').value,hora:$('#hora').value,puesto:$('#puesto').value,nombre:$('#nombre').value,firma:sig.data()})});
+  // fecha y hora: en una revisión nueva se registran al momento de guardar (salvo que las cambies a mano)
+  const nowDT=()=>{ if(isNewRev&&!manualDT){ $('#fecha').value=today(); $('#hora').value=nowTime(); } };
+  const noteDT=()=>{ $('#dtNote').textContent=isNewRev?(manualDT?'Fecha y hora capturadas a mano.':'La fecha y hora se registran automáticamente al guardar la revisión.'):''; };
+  ['#fecha','#hora'].forEach(k=>$(k).addEventListener('input',()=>{manualDT=true;noteDT();}));
+  nowDT(); noteDT();
+  const noteEl=$('#dtNote'); const dtTimer=setInterval(()=>{ if(!document.body.contains(noteEl)) return clearInterval(dtTimer); nowDT(); },15000);
+  onVisibleDT=nowDT;
+  Draft.collect=()=>({kind:'rev',termId:t.id,existing:!!existing,manualDT,r:Object.assign({},r,{obs1:$('#obs1').value,obs2:$('#obs2').value,fecha:$('#fecha').value,hora:$('#hora').value,puesto:$('#puesto').value,nombre:$('#nombre').value,firma:sig.data()})});
   const curRev=()=>Object.assign({},r,{obs1:$('#obs1').value,obs2:$('#obs2').value,fecha:$('#fecha').value,hora:$('#hora').value,puesto:$('#puesto').value,nombre:$('#nombre').value});
-  dirtyFn=()=>comp(curRev(),sig.changed()?'*':(r.firma||''))!==baseRev;
+  dirtyFn=()=>comp(curRev(),sig.changed()?'*':(r.firma||''))!==baseRev || (manualDT&&($('#fecha').value!==f0||$('#hora').value!==h0));
   $('#saveR').onclick=async()=>{
-    r.obs1=$('#obs1').value.trim(); r.obs2=$('#obs2').value.trim(); delete r.obs; r.fecha=$('#fecha').value; r.hora=$('#hora').value; r.puesto=$('#puesto').value.trim(); r.nombre=$('#nombre').value.trim();
+    r.obs1=$('#obs1').value.trim(); r.obs2=$('#obs2').value.trim(); delete r.obs; nowDT(); r.fecha=$('#fecha').value; r.hora=$('#hora').value; if(isNewRev) r.registrada=new Date().toISOString(); r.puesto=$('#puesto').value.trim(); r.nombre=$('#nombre').value.trim();
     r.firma=sig.data();
     const miss=r.ans.map((a,i)=>a?0:i+1).filter(Boolean);
     if(miss.length) return alert('Faltan por contestar los incisos: '+miss.join(', '));
@@ -966,7 +979,7 @@ function viewRevs(el){
       ${pend.length?pend.map(item).join(''):'<div class="note">No hay revisiones pendientes. Haz una desde Terminales.</div>'}
     </div>
     <div class="card"><h2>Generar y enviar</h2>
-      <div class="note">Se usan las revisiones seleccionadas. Primero se generan los archivos y después eliges compartir (WhatsApp, Teams, Telegram, correo…) o descargar.</div>
+      <div class="note">Se usan las revisiones seleccionadas. Primero se generan los archivos y después eliges compartir (WhatsApp, Teams, Telegram, correo…) o descargar. Desde el teléfono se comparten el PDF y el archivo de datos; los Excel se guardan en Descargas.</div>
       <label class="check" style="margin:8px 0"><input type="checkbox" id="oneFile" checked><span>Un solo PDF con todas (una hoja por terminal)</span></label>
       <label class="check" style="margin:8px 0"><input type="checkbox" id="withX" checked><span>Incluir Excel resumen</span></label>
       <label class="check" style="margin:8px 0"><input type="checkbox" id="withInv"><span>Incluir Excel de inventario actualizado</span></label>
@@ -1045,25 +1058,18 @@ async function importData(){
 function downloadFiles(files){
   files.forEach((f,i)=>setTimeout(()=>{const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},4000);},i*400));
 }
-function wbToCsv(wb,name){ // Android no permite compartir .xlsx; el CSV sí y Excel lo abre igual
-  const base=name.replace(/\.xlsx$/i,''); const many=wb.SheetNames.length>1;
-  return wb.SheetNames.map(n=>new File(['\ufeff'+XLSX.utils.sheet_to_csv(wb.Sheets[n])],`${base}${many?'_'+n:''}.csv`,{type:'text/csv'}));
-}
+const ANDROID_MSG='Android no permite compartir archivos de Excel desde una app web, así que se guardaron en Descargas. Para enviarlos: toca la notificación de descarga, o abre la app Archivos > Descargas, mantén presionado el archivo y elige Compartir.';
 async function shareFiles(files,title,text,mode='share'){
   if(mode==='download'){ downloadFiles(files); toast('Archivos descargados'); return 'download'; }
   if(!navigator.share){ downloadFiles(files); alert('Este navegador no permite compartir directamente; los archivos se descargaron.'); return 'download'; }
-  const can=f=>{try{return !!(navigator.canShare&&navigator.canShare({files:[f]}));}catch(e){return false;}};
-  let ok=[],rest=[],conv=false;
-  for(const f of files){
-    if(can(f)) ok.push(f);
-    else if(f._wb){ const c=wbToCsv(f._wb,f.name); if(c.every(can)){ok.push(...c);conv=true;} else rest.push(f); }
-    else rest.push(f);
-  }
-  if(!ok.length){ downloadFiles(files); alert('Estos archivos no se pueden compartir desde el navegador; se descargaron.'); return 'download'; }
-  try{ await navigator.share({files:ok,title,text}); }
-  catch(e){ if(e.name==='AbortError') return 'cancel'; downloadFiles(files); alert('No se pudo abrir el menú Compartir ('+e.name+'); los archivos se descargaron.'); return 'download'; }
-  if(rest.length){ downloadFiles(rest); toast('Algunos archivos se guardaron en Descargas',3500); }
-  if(conv) toast('El Excel se compartió como CSV (se abre en Excel). Si lo necesitas en .xlsx usa Descargar.',5000);
+  // Android solo acepta compartir ciertos tipos (PDF, texto, imágenes); Excel y CSV los rechaza
+  const can=f=>{ if(!/\.(pdf|txt|png|jpe?g)$/i.test(f.name)) return false; try{return !!(navigator.canShare&&navigator.canShare({files:[f]}));}catch(e){return false;} };
+  const ok=files.filter(can), rest=files.filter(f=>!can(f));
+  if(!ok.length){ downloadFiles(files); alert(ANDROID_MSG); return 'download'; }
+  // solo los archivos: si se agrega texto, WhatsApp y otras apps mandan el texto y descartan el archivo
+  try{ await navigator.share({files:ok}); }
+  catch(e){ if(e.name==='AbortError') return 'cancel'; downloadFiles(files); alert('No se pudo abrir el menú Compartir ('+e.name+'); los archivos se guardaron en Descargas.'); return 'download'; }
+  if(rest.length){ downloadFiles(rest); alert('Se compartió: '+ok.map(f=>f.name).join(', ')+'.\n\n'+rest.map(f=>f.name).join(', ')+': '+ANDROID_MSG); }
   return 'shared';
 }
 function xlsxFile(wb,name){const out=XLSX.write(wb,{bookType:'xlsx',type:'array'});const f=new File([out],name,{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});f._wb=wb;return f;}
@@ -1212,7 +1218,7 @@ function viewCfg(el){
       <button class="btn block" id="rs">Importar archivo de datos</button>
       <button class="btn danger block" id="wipe">Borrar todos los datos</button>
     </div>
-    <div class="note" style="text-align:center">Revisión TPV PCI · v1.7 · funciona sin conexión</div>`;
+    <div class="note" style="text-align:center">Revisión TPV PCI · v1.9 · funciona sin conexión</div>`;
   const drawEmps=()=>{$('#emps').innerHTML=Object.entries(st.empresas).map(([k,e])=>`<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:4px" data-k="${esc(k)}">
     <label class="f"><span>Clave</span><input type="text" data-x="k" value="${esc(k)}"></label>
     <label class="f"><span>Razón social</span><input type="text" data-x="razon" value="${esc(e.razon)}"></label>
