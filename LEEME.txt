@@ -1,0 +1,74 @@
+REVISIÓN TPV PCI  v2.0
+=====================
+
+Archivos:
+  index.html      La app completa (funciona sin internet; librerías incluidas)
+  manifest.json   Datos para instalarla como app en el teléfono
+  sw.js           Hace que funcione sin conexión una vez instalada
+  icon-192.png / icon-512.png   Ícono
+
+------------------------------------------------------------
+EN LA PC
+------------------------------------------------------------
+Doble clic en index.html (Chrome o Edge). Funciona igual que el
+generador de refacturación. Los datos que captures en la PC se
+quedan en la PC (son independientes de los del teléfono).
+
+------------------------------------------------------------
+EN EL TELÉFONO ANDROID (instalación única, ~10 minutos)
+------------------------------------------------------------
+Para que Android la instale como app y funcione sin señal, debe
+abrirse UNA vez desde una dirección https. La forma gratuita es
+GitHub Pages:
+
+ 1. Crea una cuenta en github.com (si no tienes).
+ 2. Botón "+" > New repository. Nombre: tpv-pci. Público. Create.
+ 3. "uploading an existing file": arrastra los 5 archivos de esta
+    carpeta (index.html, manifest.json, sw.js, icon-192.png,
+    icon-512.png). Commit changes.
+ 4. Settings > Pages > Branch: main / (root) > Save.
+ 5. En 1-2 minutos queda en:  https://TU-USUARIO.github.io/tpv-pci/
+ 6. Abre esa dirección en Chrome del teléfono > menú ⋮ >
+    "Agregar a pantalla principal" / "Instalar app".
+
+Listo: queda el ícono "TPV PCI" y funciona sin internet.
+Importante: en GitHub solo vive el programa. Tu inventario y tus
+revisiones NUNCA se suben; se guardan solo en el teléfono.
+
+------------------------------------------------------------
+PRIMER USO
+------------------------------------------------------------
+ 1. Pasa tu Excel de inventario al teléfono (correo, OneDrive…).
+ 2. En la app: Importar Excel de inventario. Detecta sola la hoja
+    con columnas "Ubicación" y "Número de serie".
+ 3. Ajustes: tu nombre, puesto y "Mi firma" (se inserta sola en cada revisión).
+
+USO NORMAL
+ - Terminales > toca una > "Verificar inventario" o "Hacer revisión PCI".
+ - Revisiones > selecciona > "Generar archivos" > "Compartir" o "Descargar"; elige
+   correo/Outlook/OneDrive. En la PC lo abres e imprimes.
+ - Inventario actualizado: Terminales > "Descargar inventario en
+   Excel" (incluye hoja "Cambios" con lo que corregiste).
+
+PASAR LA INFORMACIÓN DEL TELÉFONO A LA PC
+ 1. Teléfono: Ajustes > "Compartir datos" (o en Revisiones marca
+    "Incluir archivo de datos para la PC"). Se genera un archivo
+    Datos_TPV_PCI_....txt; mándatelo por WhatsApp, Teams o correo.
+ 2. PC: abre index.html > Ajustes > "Importar archivo de datos" >
+    Combinar.
+ 3. PC: Revisiones > selecciona > Generar archivos > Descargar.
+    Ahí sí obtienes el Excel (.xlsx) con formato y el PDF para imprimir.
+Funciona igual en sentido contrario (PC -> teléfono). Importar el
+mismo archivo dos veces no duplica revisiones, y una revisión
+eliminada en un equipo se elimina en el otro al combinar.
+
+RESPALDO
+Los datos viven en el teléfono. Si borras los datos de Chrome o
+cambias de teléfono se pierden: de vez en cuando usa Ajustes >
+"Descargar datos" y guarda el archivo en OneDrive. Para recuperarlo:
+"Importar archivo de datos" > Reemplazar todo.
+
+ACTUALIZAR LA APP
+Cuando haya una versión nueva, sube el nuevo index.html al mismo
+repositorio (reemplazando el anterior). El teléfono la toma la
+siguiente vez que abras la app con internet. Tus datos se conservan.
