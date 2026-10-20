@@ -579,12 +579,13 @@ DB.set=(k,v)=>new Promise(res=>{
   t.oncomplete=()=>res(); t.onerror=()=>{toast('No se pudo guardar');res()};
 });
 
-const S={terminals:[],revisions:[],changes:[],settings:null};
+const S={terminals:[],revisions:[],changes:[],settings:null,deleted:[]};
 async function load(){
   await DB.open();
   S.terminals=(await DB.get('terminals'))||[];
   S.revisions=(await DB.get('revisions'))||[];
   S.changes=(await DB.get('changes'))||[];
+  S.deleted=(await DB.get('deleted'))||[];
   S.settings=Object.assign(structuredClone(DEFAULT_SETTINGS),(await DB.get('settings'))||{});
   migrate();
   try{ if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); }catch(e){}
@@ -949,7 +950,7 @@ function viewRev(el,t,existing,draft){
     if(!S.settings.nombre||!S.settings.puesto){S.settings.nombre=S.settings.nombre||r.nombre;S.settings.puesto=S.settings.puesto||r.puesto;await save('settings');}
     await save('revisions'); dirty=false; Draft.clear(); toast('Revisión guardada'); back();
   };
-  if(existing) $('#del').onclick=async()=>{ if(!confirm('¿Eliminar esta revisión?'))return; S.revisions=S.revisions.filter(x=>x.id!==r.id); await save('revisions'); dirty=false; Draft.clear(); back(); };
+  if(existing) $('#del').onclick=async()=>{ if(!confirm('¿Eliminar esta revisión?'))return; await deleteRevision(r); dirty=false; Draft.clear(); back(); };
 }
 function shrink(file,max,q){return new Promise((res,rej)=>{const img=new Image();const u=URL.createObjectURL(file);img.onload=()=>{const s=Math.min(1,max/Math.max(img.width,img.height));const c=document.createElement('canvas');c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);c.getContext('2d').drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(u);res(c.toDataURL('image/jpeg',q));};img.onerror=rej;img.src=u;});}
 function initSig(cv,initial,onChange){
@@ -968,18 +969,31 @@ function initSig(cv,initial,onChange){
 
 /* ============ Vista: Revisiones ============ */
 let showSent=false;
+let revF={banco:'Todos',emp:'Todas',q:''}; let revSel=null, revSeen=null; // filtros y selección de la pantalla Revisiones
+const revTerm=r=>S.terminals.find(x=>x.id===r.termId);
+const revBank=r=>(r.h&&r.h.banco)||r.banco||((revTerm(r)||{f:{}}).f.Banco)||'Sin banco';
+const revEmp=r=>((revTerm(r)||{f:{}}).f.Empresa)||'';
+const revTipo=r=>(r.h&&r.h.tipoTerm)||((revTerm(r)||{f:{}}).f["Tipo Terminal"])||'';
+async function deleteRevision(r){
+  S.revisions=S.revisions.filter(x=>x.id!==r.id);
+  if(!S.deleted.includes(r.id)) S.deleted.push(r.id);
+  await save('revisions'); await save('deleted');
+}
 function viewRevs(el){
-  const pend=pendingRevs().sort((a,b)=>(a.fecha+a.hora).localeCompare(b.fecha+b.hora));
-  const sent=S.revisions.filter(r=>r.estado==='enviada').sort((a,b)=>(b.fecha+b.hora).localeCompare(a.fecha+a.hora));
-  const item=r=>`<div class="term" style="display:flex;gap:10px;align-items:flex-start"><input type="checkbox" class="sel" data-id="${r.id}" ${r.estado!=='enviada'?'checked':''} style="width:22px;height:22px;margin-top:3px;flex:none">
-    <div style="flex:1" data-open="${r.id}"><div class="t1">${esc(r.termLabel||r.h.linea)}</div><div class="t2">${fmtDate(r.fecha)} ${esc(r.hora)} · ${esc(r.tipo)} · Serie ${esc(r.h.serie||'—')}</div>
-    ${r.alertas?`<span class="badge bad">${r.alertas} alerta(s)</span>`:'<span class="badge ok">Sin alertas</span>'}${r.fotos&&r.fotos.length?`<span class="badge">${r.fotos.length} foto(s)</span>`:''}${r.firma?'':'<span class="badge acc">Sin firma</span>'}</div></div>`;
+  if(!revSel){ revSel=new Set(pendingRevs().map(r=>r.id)); revSeen=new Set(S.revisions.map(r=>r.id)); }
+  pendingRevs().forEach(r=>{ if(!revSeen.has(r.id)){ revSel.add(r.id); revSeen.add(r.id); } }); // las nuevas llegan seleccionadas
+  const pass=r=>{ const q=revF.q.toLowerCase().trim();
+    return (revF.banco==='Todos'||revBank(r)===revF.banco)&&(revF.emp==='Todas'||revEmp(r)===revF.emp)&&
+      (!q||[r.termLabel,r.h.linea,r.h.serie,r.h.afilVM,r.h.afilAmex,r.h.caja,revBank(r),revTipo(r),r.tipo].join(' ').toLowerCase().includes(q)); };
+  const banks=['Todos',...new Set(S.revisions.map(revBank))], emps=['Todas',...new Set(S.revisions.map(revEmp).filter(Boolean))];
+  const cnt=(k,v)=>S.revisions.filter(r=>r.estado!=='enviada'&&(k==='b'?revBank(r)===v:revEmp(r)===v)).length;
   el.innerHTML=`
-    <div class="card"><h2>Pendientes de enviar (${pend.length})</h2>
-      ${pend.length?pend.map(item).join(''):'<div class="note">No hay revisiones pendientes. Haz una desde Terminales.</div>'}
-    </div>
+    <input type="search" id="rq" placeholder="Buscar ubicación, serie, afiliación…" value="${esc(revF.q)}">
+    <div class="chips" id="fb">${banks.map(b=>`<button class="chip ${revF.banco===b?'on':''}" data-v="${esc(b)}">${esc(b)}${b!=='Todos'?` <span style="opacity:.7">(${cnt('b',b)})</span>`:''}</button>`).join('')}</div>
+    ${emps.length>2?`<div class="chips" id="fe">${emps.map(e=>`<button class="chip ${revF.emp===e?'on':''}" data-v="${esc(e)}">${esc(e)}</button>`).join('')}</div>`:''}
+    <div id="lists"></div>
     <div class="card"><h2>Generar y enviar</h2>
-      <div class="note">Se usan las revisiones seleccionadas. Primero se generan los archivos y después eliges compartir (WhatsApp, Teams, Telegram, correo…) o descargar. Desde el teléfono se comparten el PDF y el archivo de datos; los Excel se guardan en Descargas.</div>
+      <div class="note">Se usan las revisiones seleccionadas que se ven con el filtro actual. Primero se generan los archivos y después eliges compartir (WhatsApp, Teams, Telegram, correo…) o descargar. Desde el teléfono se comparten el PDF y el archivo de datos; los Excel se guardan en Descargas.</div>
       <label class="check" style="margin:8px 0"><input type="checkbox" id="oneFile" checked><span>Un solo PDF con todas (una hoja por terminal)</span></label>
       <label class="check" style="margin:8px 0"><input type="checkbox" id="withX" checked><span>Incluir Excel resumen</span></label>
       <label class="check" style="margin:8px 0"><input type="checkbox" id="withInv"><span>Incluir Excel de inventario actualizado</span></label>
@@ -987,14 +1001,44 @@ function viewRevs(el){
       <button class="btn acc block" id="send">Generar archivos</button>
       <div id="out"></div>
       <button class="btn block" id="mark">Marcar seleccionadas como enviadas</button>
+    </div>`;
+  const item=r=>{ const tb=revBank(r), tp=revTipo(r);
+    const af=[r.h.afilVM&&r.h.afilVM!=='N/A'?'V/MC '+esc(r.h.afilVM):'',r.h.afilAmex&&r.h.afilAmex!=='N/A'?'Amex '+esc(r.h.afilAmex):''].filter(Boolean).join(' · ');
+    return `<div class="term" style="display:flex;gap:10px;align-items:flex-start;cursor:default"><input type="checkbox" class="sel" data-id="${r.id}" ${revSel.has(r.id)?'checked':''} style="width:22px;height:22px;margin-top:3px;flex:none">
+    <div style="flex:1;min-width:0;cursor:pointer" data-open="${r.id}"><div class="t1">${esc(r.termLabel||r.h.linea)}</div>
+      <div class="t2"><b>${esc(tb)}</b>${tp?' · '+esc(tp):''}${revEmp(r)?' · '+esc(revEmp(r)):''}</div>
+      <div class="t2">${fmtDate(r.fecha)} ${esc(r.hora)} · ${esc(r.tipo)}</div>
+      <div class="t2 mono">Serie ${esc(r.h.serie||'—')}${af?' · '+af:''}${r.h.caja?' · Caja '+esc(r.h.caja):''}</div>
+      ${r.alertas?`<span class="badge bad">${r.alertas} alerta(s)</span>`:'<span class="badge ok">Sin alertas</span>'}${r.fotos&&r.fotos.length?`<span class="badge">${r.fotos.length} foto(s)</span>`:''}${r.firma?'':'<span class="badge acc">Sin firma</span>'}</div>
+    <button class="btn sm" data-del="${r.id}" title="Eliminar revisión" aria-label="Eliminar revisión" style="flex:none;min-height:40px;padding:6px 10px;color:var(--bad);border-color:transparent;background:none;font-size:20px">🗑</button></div>`; };
+  const drawLists=()=>{
+    const pend=pendingRevs().filter(pass).sort((a,b)=>(a.fecha+a.hora).localeCompare(b.fecha+b.hora));
+    const sent=S.revisions.filter(r=>r.estado==='enviada'&&pass(r)).sort((a,b)=>(b.fecha+b.hora).localeCompare(a.fecha+a.hora));
+    const filtered=revF.banco!=='Todos'||revF.emp!=='Todas'||revF.q.trim();
+    $('#lists').innerHTML=`
+    <div class="card"><h2>Pendientes de enviar (${pend.length}${filtered?' con este filtro':''})</h2>
+      ${pend.length?`<div class="row" style="margin-bottom:4px"><button class="btn sm" id="selAll">Seleccionar todas</button><button class="btn sm" id="selNone">Ninguna</button></div>`+pend.map(item).join(''):`<div class="note">${filtered?'No hay revisiones pendientes con este filtro.':'No hay revisiones pendientes. Haz una desde Terminales.'}</div>`}
     </div>
     <div class="card"><h2>Historial enviado (${sent.length})</h2>
       ${sent.length?`<button class="btn sm" id="tog">${showSent?'Ocultar':'Mostrar'}</button>${showSent?sent.map(item).join(''):''}`:'<div class="note">Aún no hay revisiones enviadas.</div>'}
     </div>`;
-  el.querySelectorAll('[data-open]').forEach(d=>d.onclick=()=>{const r=S.revisions.find(x=>x.id===d.dataset.open);const t=S.terminals.find(x=>x.id===r.termId)||{id:r.termId,f:{}};go(e=>viewRev(e,t,r),'Revisión PCI');});
-  const selected=()=>[...el.querySelectorAll('.sel:checked')].map(c=>S.revisions.find(r=>r.id===c.dataset.id)).sort((a,b)=>(a.fecha+a.hora).localeCompare(b.fecha+b.hora));
+    const L=$('#lists');
+    L.querySelectorAll('.sel').forEach(c=>c.onchange=()=>{c.checked?revSel.add(c.dataset.id):revSel.delete(c.dataset.id);});
+    L.querySelectorAll('[data-open]').forEach(d=>d.onclick=()=>{const r=S.revisions.find(x=>x.id===d.dataset.open);const t=revTerm(r)||{id:r.termId,f:{}};go(e=>viewRev(e,t,r),'Revisión PCI');});
+    L.querySelectorAll('[data-del]').forEach(b=>b.onclick=async e=>{ e.stopPropagation();
+      const r=S.revisions.find(x=>x.id===b.dataset.del);
+      if(!confirm(`¿Eliminar la revisión de\n${r.termLabel||r.h.linea}\n${fmtDate(r.fecha)} ${r.hora} · Serie ${r.h.serie||'—'}?\n\nNo se puede deshacer.`)) return;
+      const y=window.scrollY; await deleteRevision(r); revSel.delete(r.id); render(viewRevs,'Revisiones'); window.scrollTo(0,y); toast('Revisión eliminada'); });
+    if($('#selAll')) $('#selAll').onclick=()=>{pend.forEach(r=>revSel.add(r.id));drawLists();};
+    if($('#selNone')) $('#selNone').onclick=()=>{pend.forEach(r=>revSel.delete(r.id));drawLists();};
+    if($('#tog')) $('#tog').onclick=()=>{showSent=!showSent;drawLists();};
+  };
+  drawLists();
+  $('#rq').oninput=e=>{revF.q=e.target.value;drawLists();};
+  $('#fb').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{revF.banco=c.dataset.v;$('#fb').querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x===c));drawLists();});
+  if($('#fe')) $('#fe').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{revF.emp=c.dataset.v;$('#fe').querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x===c));drawLists();});
+  const selected=()=>S.revisions.filter(r=>revSel.has(r.id)&&pass(r)&&(r.estado!=='enviada'||showSent)).sort((a,b)=>(a.fecha+a.hora).localeCompare(b.fecha+b.hora));
   try{const o=JSON.parse(localStorage.getItem('tpv-opts')||'{}');for(const k in o){const c=$('#'+k);if(c)c.checked=o[k];}}catch(e){}
-  if($('#tog')) $('#tog').onclick=()=>{showSent=!showSent;render(viewRevs,'Revisiones');};
   $('#send').onclick=async()=>{
     const sel=selected(); if(!sel.length) return alert('Selecciona al menos una revisión.');
     const btn=$('#send'); btn.disabled=true; btn.textContent='Generando…'; $('#out').innerHTML='';
@@ -1015,19 +1059,19 @@ function viewRevs(el){
         ${files.map(f=>`<div class="mono" style="margin:3px 0">📄 ${esc(f.name)} <span class="note">(${kb(f)})</span></div>`).join('')}
         <button class="btn acc block" id="doShare">📤 Compartir (WhatsApp, Teams, Telegram, correo…)</button>
         <button class="btn block" id="doDl">⬇ Descargar</button></div>`;
-      const after=async res=>{ if(res!=='cancel' && confirm('¿Marcar estas revisiones como enviadas?')){ sel.forEach(r=>{r.estado='enviada';r.mod=Date.now();}); await save('revisions'); render(viewRevs,'Revisiones'); } };
+      const after=async res=>{ if(res!=='cancel' && confirm('¿Marcar estas revisiones como enviadas?')){ sel.forEach(r=>{r.estado='enviada';r.mod=Date.now();revSel.delete(r.id);}); await save('revisions'); render(viewRevs,'Revisiones'); } };
       $('#doShare').onclick=async()=>after(await shareFiles(files,title,text,'share'));
       $('#doDl').onclick=async()=>after(await shareFiles(files,title,text,'download'));
       $('#out').scrollIntoView({behavior:'smooth',block:'center'});
     }catch(e){console.error(e);alert('Error al generar: '+e.message);}
     finally{ if(document.body.contains(btn)){btn.disabled=false;btn.textContent=$('#out').innerHTML?'Volver a generar':'Generar archivos';btn.classList.toggle('acc',!$('#out').innerHTML);} }
   };
-  $('#mark').onclick=async()=>{const sel=selected(); if(!sel.length)return; sel.forEach(r=>r.estado='enviada'); await save('revisions'); render(viewRevs,'Revisiones');};
+  $('#mark').onclick=async()=>{const sel=selected(); if(!sel.length)return alert('Selecciona al menos una revisión.'); sel.forEach(r=>{r.estado='enviada';r.mod=Date.now();revSel.delete(r.id);}); await save('revisions'); render(viewRevs,'Revisiones');};
 }
 
 /* ============ Compartir / descargar ============ */
 function dataFile(){
-  const d=new Date(); const data={app:'tpv-pci',v:2,fecha:d.toISOString(),terminals:S.terminals,revisions:S.revisions,changes:S.changes,settings:S.settings};
+  const d=new Date(); const data={app:'tpv-pci',v:3,fecha:d.toISOString(),terminals:S.terminals,revisions:S.revisions,changes:S.changes,settings:S.settings,deleted:S.deleted};
   return new File([JSON.stringify(data)],`Datos_TPV_PCI_${today()}_${pad(d.getHours())}${pad(d.getMinutes())}.txt`,{type:'text/plain'});
 }
 function choose(msg,opts){return new Promise(res=>{const m=document.createElement('div');m.className='modal';
@@ -1042,17 +1086,20 @@ async function importData(){
   const inc={terminals:d.terminals||[],revisions:d.revisions||[],changes:d.changes||[]};
   if(how==='replace'){
     if(!confirm('Se borrarán los datos actuales de este equipo y se reemplazarán por los del archivo. ¿Continuar?')) return;
-    Object.assign(S,inc,{settings:Object.assign(structuredClone(DEFAULT_SETTINGS),d.settings||{})});
+    Object.assign(S,inc,{settings:Object.assign(structuredClone(DEFAULT_SETTINGS),d.settings||{}),deleted:d.deleted||[]});
   }else{
+    // revisiones eliminadas en cualquiera de los dos equipos se eliminan en ambos
+    const del=new Set([...S.deleted,...(d.deleted||[])]); S.deleted=[...del];
+    let nDel=S.revisions.filter(r=>del.has(r.id)).length; S.revisions=S.revisions.filter(r=>!del.has(r.id));
     const byId=new Map(S.revisions.map(r=>[r.id,r])); let nNew=0,nUpd=0;
-    inc.revisions.forEach(r=>{const e=byId.get(r.id); if(!e){byId.set(r.id,r);nNew++;} else if((r.mod||0)>(e.mod||0)){byId.set(r.id,r);nUpd++;}});
+    inc.revisions.filter(r=>!del.has(r.id)).forEach(r=>{const e=byId.get(r.id); if(!e){byId.set(r.id,r);nNew++;} else if((r.mod||0)>(e.mod||0)){byId.set(r.id,r);nUpd++;}});
     S.revisions=[...byId.values()];
     if(inc.terminals.length) S.terminals=inc.terminals;
     const key=c=>[c.fecha,c.termId,c.campo,c.despues].join('|'); const seen=new Set(S.changes.map(key));
     inc.changes.forEach(c=>{if(!seen.has(key(c))){S.changes.push(c);seen.add(key(c));}});
-    toast(`${nNew} revisiones nuevas, ${nUpd} actualizadas`,4000);
+    toast(`${nNew} revisiones nuevas, ${nUpd} actualizadas${nDel?`, ${nDel} eliminadas`:''}`,4000);
   }
-  migrate(); for(const k of ['terminals','revisions','changes','settings']) await save(k);
+  migrate(); for(const k of ['terminals','revisions','changes','settings','deleted']) await save(k); revSel=null;
   setTab('revs');
 }
 function downloadFiles(files){
@@ -1218,7 +1265,7 @@ function viewCfg(el){
       <button class="btn block" id="rs">Importar archivo de datos</button>
       <button class="btn danger block" id="wipe">Borrar todos los datos</button>
     </div>
-    <div class="note" style="text-align:center">Revisión TPV PCI · v1.9 · funciona sin conexión</div>`;
+    <div class="note" style="text-align:center">Revisión TPV PCI · v2.0 · funciona sin conexión</div>`;
   const drawEmps=()=>{$('#emps').innerHTML=Object.entries(st.empresas).map(([k,e])=>`<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:4px" data-k="${esc(k)}">
     <label class="f"><span>Clave</span><input type="text" data-x="k" value="${esc(k)}"></label>
     <label class="f"><span>Razón social</span><input type="text" data-x="razon" value="${esc(e.razon)}"></label>
@@ -1242,7 +1289,7 @@ function viewCfg(el){
   $('#bkd').onclick=()=>shareFiles([dataFile()],'Datos TPV PCI','','download');
   $('#rs').onclick=importData;
   $('#wipe').onclick=async()=>{if(!confirm('¿Borrar TODO (terminales, revisiones, ajustes) de este dispositivo?'))return;if(prompt('Escribe BORRAR para confirmar')!=='BORRAR')return;
-    Object.assign(S,{terminals:[],revisions:[],changes:[],settings:structuredClone(DEFAULT_SETTINGS)});for(const k of ['terminals','revisions','changes','settings']) await save(k);setTab('terms');};
+    Object.assign(S,{terminals:[],revisions:[],changes:[],deleted:[],settings:structuredClone(DEFAULT_SETTINGS)});for(const k of ['terminals','revisions','changes','settings','deleted']) await save(k);setTab('terms');};
 }
 function banks(){return [...new Set(['HSBC',...S.terminals.map(t=>t.f.Banco).filter(Boolean),...Object.keys(S.settings.bankLogos)])];}
 function bankOf(r){const t=S.terminals.find(x=>x.id===r.termId);return r.banco||(t&&t.f.Banco)||'';}
