@@ -99,7 +99,7 @@ img.lg{max-height:56px;max-width:220px;display:block;margin:4px 0 8px;background
   <button data-tab="cfg"><span class="ic">⚙</span>Ajustes</button>
 </nav>
 <input type="file" id="fileXlsx" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hide">
-<input type="file" id="fileJson" accept=".txt,.json,text/plain,application/json" class="hide">
+<input type="file" id="fileJson" class="hide">
 <input type="file" id="fileLogo" accept="image/*" class="hide">
 <input type="file" id="filePhoto" accept="image/*" capture="environment" class="hide">
 
@@ -4377,7 +4377,7 @@ function viewCfg(el){
       <button class="btn block" id="rs">Importar archivo de datos</button>
       <button class="btn danger block" id="wipe">Borrar todos los datos</button>
     </div>
-    <div class="note" style="text-align:center">Revisión TPV PCI · v3.0 · funciona sin conexión</div>`;
+    <div class="note" style="text-align:center">Revisión TPV PCI · v3.0.1 · funciona sin conexión</div>`;
   const drawEmps=()=>{$('#emps').innerHTML=Object.entries(st.empresas).map(([k,e])=>`<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:4px" data-k="${esc(k)}">
     <label class="f"><span>Clave</span><input type="text" data-x="k" value="${esc(k)}"></label>
     <label class="f"><span>Razón social</span><input type="text" data-x="razon" value="${esc(e.razon)}"></label>
