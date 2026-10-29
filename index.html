@@ -4097,6 +4097,9 @@ function viewAct(el,c,tipo,a0){
     ['numero','medio','contacto','compromiso','tecnico','empresaTec','orden','idVer','serieSale','serieEntra','marcaEntra','modeloEntra','imei1','imei2','chipEntra','cambioCargador','cambioCable','nuevoEstatus','realizadoPor','destino','devolverAntes'].forEach(k=>{const x=v(k); if(x!==undefined) a[k]=x;});
     if(sigs.tec) a.firmaTec=sigs.tec.data();
     if(tipo==='Reporte levantado'&&!a.numero) return alert('Captura el número de reporte.');
+    const ap=(c.apertura||'').slice(0,10);
+    if(ap&&a.fecha&&a.fecha<ap&&!confirm(`La fecha del seguimiento (${fmtDate(a.fecha)}) es anterior al inicio del caso (${fmtDate(ap)}). ¿Guardar así?`)) return;
+    if(a.notas&&c.acts.some(x=>x.id!==a.id&&normCat(x.notas)===normCat(a.notas))&&!confirm('La nota es igual a la de otro seguimiento de este caso. ¿Guardar así?')) return;
     if((tipo==='Cambio de TPV'||tipo==='Recepción de TPV nueva')&&!a.serieEntra) return alert('Captura la serie de la TPV '+(tipo==='Cambio de TPV'?'que entra.':'recibida.'));
     if((tipo==='Cambio de TPV'||tipo==='Recepción de TPV nueva')&&!t) return alert('El caso no tiene terminal asignada. Edita el caso y elige la terminal.');
     if(a.acta){
@@ -4263,6 +4266,7 @@ async function importBitacora(){
   const ORIG={};
   const R=rows.map((r,i)=>{ const obs=g(r,'Observaciones'); const reps=new Set(); const rc=g(r,'Reporte'); if(rc){ reps.add(alnum(rc)); ORIG[alnum(rc)]=rc.trim(); }
       for(const m of obs.matchAll(RX)) if(m[1].replace(/\D/g,'').length>=6){ reps.add(alnum(m[1])); ORIG[alnum(m[1])]=ORIG[alnum(m[1])]||m[1]; }
+      for(const m of obs.matchAll(/(?:n[uú]mero|original)\s*:?\s*([0-9][0-9A-Z-]{5,})/gi)) reps.add(alnum(m[1]));
       return {i,fecha:parseFechaX(g(r,'Fecha')),ev:g(r,'Evento'),emp:g(r,'Empresa'),lin:g(r,'Línea negocio'),ubic:g(r,'Ubicación'),tipo:g(r,'Tipo terminal'),banco:g(r,'Banco'),vm:g(r,'Afiliación Visa-Mcard'),amex:g(r,'Afiliación Amex'),
         marcaO:g(r,'Marca TPV original'),modO:g(r,'Modelo TPV original'),serO:g(r,'Serie TPV original'),marcaN:g(r,'MarcaTPV nueva')||g(r,'Marca TPV nueva'),modN:g(r,'Modelo TPV nueva'),serN:g(r,'Serie TPV nueva'),
         obs,rep:rc,maxA:g(r,'Para atenderse máximo'),atend:g(r,'Fecha atendido'),dev:g(r,'Fecha devolución TPV'),reps}; }).filter(r=>r.ev&&r.fecha);
@@ -4282,45 +4286,85 @@ async function importBitacora(){
     if(!grp&&RESOLVE_EV.test(r.ev)) grp=[...groups].reverse().find(G=>G.key===r.key&&/^(reporte|solicitud)/i.test(G.rows[0].ev)&&!G.rows.some(x=>RESOLVE_EV.test(x.ev))&&daysBetween(G.rows[G.rows.length-1].fecha,r.fecha)<=20);
     if(grp){ grp.rows.push(r); r.reps.forEach(x=>grp.reps.add(x)); } else groups.push({key:r.key,rows:[r],reps:new Set(r.reps)});
   });
-  let seq=Math.max(S.settings.caseSeq||0,...S.cases.map(c=>c.num||0)), nNew=0, nOpen=0; const existing=new Set(S.cases.map(c=>c.id));
+  let seq=Math.max(S.settings.caseSeq||0,...S.cases.map(c=>c.num||0)), nNew=0, nUpd=0, nOpen=0; const existing=new Map(S.cases.map(c=>[c.id,c]));
   const repGroups={}; groups.forEach(G=>G.reps.forEach(x=>(repGroups[x]=repGroups[x]||[]).push(G)));
+  // fecha escrita dentro del texto ("El técnico se presentó el 19oct26", "20oct26 se levanta…"): solo si aparece al inicio del fragmento
+  const MES={ene:1,jan:1,feb:2,mar:3,abr:4,apr:4,may:5,jun:6,jul:7,ago:8,aug:8,sep:9,set:9,oct:10,nov:11,dic:12,dec:12};
+  const segDate=(seg,rowF)=>{ const m=seg.match(/(\d{1,2})\s?(ene|jan|feb|mar|abr|apr|may|jun|jul|ago|aug|sep|set|oct|nov|dic|dec)[a-z]*\.?\s?(\d{4}|\d{2})?(?![0-9])/i);
+    if(!m||m.index>45) return ''; let y=m[3]?(m[3].length===2?'20'+m[3]:m[3]):rowF.slice(0,4);
+    let iso=`${y}-${pad(MES[m[2].toLowerCase()])}-${pad(m[1])}`; if(!m[3]&&daysBetween(rowF,iso)>45) iso=`${+y-1}${iso.slice(4)}`;
+    const d=daysBetween(rowF,iso); return (d>45||d<-150)?'':iso; };
+  const repIn=txt=>{ const n=String(txt).match(/n[uú]mero\s*:?\s*([0-9][0-9A-Z-]{5,})/i); if(n) return n[1]; for(const m of String(txt).matchAll(RX)) if(m[1].replace(/\D/g,'').length>=6) return m[1]; return ''; };
+  const actCreated=a=>parseInt(String(a.id).slice(0,8),36)||0;
+  const VISITA=/t[eé]cnico.{0,40}(se present|acudi|vino)|se present\w* (el )?t[eé]cnico/i;
+  const produced=new Set();
   groups.forEach(G=>{
     const f0=G.rows[0]; const id='h_'+f0.i+'_'+alnum(f0.fecha+f0.ev).slice(0,16);
-    if(existing.has(id)||S.deleted.includes(id)) return;
+    if(S.deleted.includes(id)) return;
     const [tipo,motivo]=classifyEv(f0.ev,f0.obs);
     const t=G.rows.map(x=>x.t).find(Boolean);
-    const c={id,num:++seq,termId:t?t.id:'',snap:{label:[f0.ubic,f0.tipo].filter(Boolean).join(' · ')||'(sin terminal)',empresa:f0.emp,linea:f0.lin,ubic:f0.ubic,tipo:f0.tipo,banco:f0.banco,afilVM:f0.vm,afilAmex:f0.amex,serie:f0.serN||f0.serO},
-      tipo,motivo,solicitante:'',area:'',descripcion:f0.obs,apertura:f0.fecha,estatus:'Abierto',compromiso:'',compromisoTxt:'',acts:[],revPend:[],imported:true,mod:Date.now(),
+    const c={id,num:0,termId:t?t.id:'',snap:{label:[f0.ubic,f0.tipo].filter(Boolean).join(' · ')||'(sin terminal)',empresa:f0.emp,linea:f0.lin,ubic:f0.ubic,tipo:f0.tipo,banco:f0.banco,afilVM:f0.vm,afilAmex:f0.amex,serie:f0.serN||f0.serO},
+      tipo,motivo,solicitante:'',area:'',descripcion:'',apertura:f0.fecha,estatus:'Abierto',compromiso:'',compromisoTxt:'',acts:[],revPend:[],imported:true,impAt:Date.now(),mod:Date.now(),
       grupo:[...G.reps].some(x=>(repGroups[x]||[]).length>1)?[...G.reps].find(x=>(repGroups[x]||[]).length>1):''};
-    let prevObs='', seenRep=new Set(), atendido='';
+    let seenTxt='', atendido='', k=0; const dated=[]; const usedRep=new Set();
+    const mkId=()=>id+'_a'+(k++);
     G.rows.forEach(r=>{
-      // quitar lo que ya venía en renglones anteriores del mismo caso (historial copiado con asteriscos)
-      const segs=String(r.obs||'').split(/\s*[*|]\s*/).map(x=>x.trim()).filter(Boolean);
-      const seenTxt=normCat(prevObs); let notas=segs.filter(x=>!seenTxt.includes(normCat(x))).join('\n'); prevObs=(prevObs+' '+r.obs);
-      const newRep=[...r.reps].find(x=>!seenRep.has(x)); r.reps.forEach(x=>seenRep.add(x));
-      const e=normCat(r.ev); const a={id:uid(),fecha:r.fecha,hora:'',notas,numero:newRep?(ORIG[newRep]||newRep):''};
+      // cada fragmento separado por renglón, "|" o "*"; los que traen fecha propia van a su propio seguimiento
+      const segs=String(r.obs||'').split(/\r?\n|\s*\|\s*|(?:^|\s)\*\s*/).map(x=>x.replace(/^[*\s.-]+/,'').trim()).filter(Boolean);
+      const keep=[];
+      segs.forEach(sg=>{ if(seenTxt.includes(normCat(sg))) return; const d=segDate(sg,r.fecha); if(d&&d!==r.fecha) dated.push({fecha:d,txt:sg}); else keep.push(sg); });
+      seenTxt+=' '+normCat(r.obs);
+      const notas=keep.join('\n'); if(!c.descripcion) c.descripcion=notas;
+      const own=[r.rep,repIn(notas)].map(x=>String(x||'').trim()).filter(Boolean).find(x=>!usedRep.has(alnum(x)));
+      if(own) usedRep.add(alnum(own));
+      const e=normCat(r.ev); const a={id:mkId(),imp:true,fecha:r.fecha,hora:'',notas,numero:own||''};
       const maxD=parseFechaX(r.maxA); if(maxD){ a.compromiso=maxD; if(!c.compromiso) c.compromiso=maxD; } else if(r.maxA&&!c.compromisoTxt) c.compromisoTxt=r.maxA;
       const at=parseFechaX(r.atend); if(at&&at>atendido) atendido=at; if(/no atendido/i.test(r.atend)) a.notas=(a.notas?a.notas+'\n':'')+'(Marcado como "No atendido")';
-      if(e.startsWith('reporte')||e.startsWith('solicitud')) a.tipo=a.numero&&!c.acts.some(x=>x.tipo==='Reporte levantado')?'Reporte levantado':(c.acts.length?'Seguimiento':'Reporte levantado');
+      if(e.startsWith('reporte')||e.startsWith('solicitud')) a.tipo=c.acts.some(x=>x.tipo==='Reporte levantado')?'Seguimiento':'Reporte levantado';
       else if(e.startsWith('cambio')) Object.assign(a,{tipo:'Cambio de TPV',serieSale:r.serO,serieEntra:r.serN,marcaEntra:r.marcaN,modeloEntra:r.modN});
       else if(e.startsWith('recibo')) Object.assign(a,{tipo:'Recepción de TPV nueva',serieEntra:r.serN||r.serO,marcaEntra:r.marcaN||r.marcaO,modeloEntra:r.modN||r.modO});
       else if(e.startsWith('retiro')) Object.assign(a,{tipo:'Retiro / devolución al banco',serieSale:r.serO||r.serN});
       else if(e.startsWith('entrega')) Object.assign(a,{tipo:'Entrega a área o usuario',serieEntra:r.serN||'',serieSale:r.serO||''});
       else if(e.startsWith('prestamo')||e.startsWith('préstamo')){ Object.assign(a,{tipo:'Préstamo (entrega)',serieSale:r.serO||r.serN}); c.loan={termId:'',actId:a.id,devuelto:'(histórico)'};
-        const dv=parseFechaX(r.dev); if(dv){ const d={id:uid(),tipo:'Devolución de préstamo',fecha:dv,hora:'',notas:'',numero:''}; c.acts.push(d); c.loan.devuelto=d.id; } }
+        const dv=parseFechaX(r.dev); if(dv){ const d={id:mkId(),imp:true,tipo:'Devolución de préstamo',fecha:dv,hora:'',notas:''}; c.acts.push(d); c.loan.devuelto=d.id; } }
       else a.tipo='Trabajo realizado';
       if(!a.numero) delete a.numero;
       c.acts.push(a);
     });
-    const resolved=c.acts.some(a=>!['Reporte levantado','Seguimiento'].includes(a.tipo));
+    // fragmentos con fecha propia: se suman al seguimiento de ese día o se crean como seguimiento nuevo
+    dated.sort((x,y)=>x.fecha.localeCompare(y.fecha)).forEach(s=>{
+      const num=repIn(s.txt); const same=c.acts.find(a=>a.fecha===s.fecha);
+      if(same){ if(!normCat(same.notas).includes(normCat(s.txt))) same.notas=(same.notas?same.notas+'\n':'')+s.txt; if(num&&!same.numero&&!usedRep.has(alnum(num))){same.numero=num;usedRep.add(alnum(num));} return; }
+      const tp=VISITA.test(s.txt)?'Visita técnica':'Seguimiento';
+      const a={id:mkId(),imp:true,tipo:tp,fecha:s.fecha,hora:'',notas:s.txt};
+      if(num&&!usedRep.has(alnum(num))){a.numero=num;usedRep.add(alnum(num));}
+      c.acts.push(a);
+    });
+    c.acts.sort((x,y)=>x.fecha.localeCompare(y.fecha));
+    let firstRep=true; c.acts.forEach(a=>{ if(a.tipo==='Reporte levantado'||a.tipo==='Seguimiento'){ if(!a.numero&&VISITA.test(a.notas||'')){ a.tipo='Visita técnica'; return; } a.tipo=firstRep?'Reporte levantado':'Seguimiento'; firstRep=false; } });
+    produced.add(id);
+    const resolved=c.acts.some(a=>!['Reporte levantado','Seguimiento','Visita técnica'].includes(a.tipo));
     if(resolved||atendido){ const last=c.acts.map(a=>a.fecha).sort().pop(); const fc=atendido&&atendido>last?atendido:(atendido||last);
       c.estatus='Cerrado'; c.cierre={fecha:fc,solucion:'(Importado del Excel)',dias:daysBetween(c.apertura,fc),cumplio:c.compromiso?fc<=c.compromiso:null}; }
-    else { c.estatus=c.acts.some(a=>a.numero)?'Reportado al banco':'Abierto'; nOpen++; }
-    S.cases.push(c); nNew++;
+    else c.estatus=c.acts.some(a=>a.numero)?'Reportado al banco':'Abierto';
+    const E=existing.get(id);
+    if(E){ // ya importado antes: se rehacen los seguimientos importados y se conserva lo capturado en la app
+      const imp0=E.impAt||Math.min(...E.acts.map(actCreated).filter(Boolean),E.mod||Date.now());
+      const userActs=E.acts.filter(a=>!a.imp&&actCreated(a)>imp0+60000);
+      c.num=E.num; c.acts=c.acts.concat(userActs).sort((x,y)=>(x.fecha+(x.hora||'')).localeCompare(y.fecha+(y.hora||'')));
+      if((E.mod||0)>imp0+60000||userActs.length) ['estatus','cierre','tipo','motivo','termId','solicitante','area','compromiso','compromisoTxt','revPend','loan','fueraServicio','prevEstatus'].forEach(f=>{ if(E[f]!==undefined) c[f]=E[f]; });
+      if(CASE_OPEN(c.estatus)) nOpen++;
+      S.cases[S.cases.indexOf(E)]=c; nUpd++;
+    } else { c.num=++seq; if(CASE_OPEN(c.estatus)) nOpen++; S.cases.push(c); nNew++; }
   });
-  S.settings.caseSeq=seq;
-  await saveCases(); await save('settings');
-  alert(`Bitácora importada: ${R.length} eventos agrupados en ${nNew} casos nuevos.\n${nOpen} quedaron abiertos (solo tienen reporte, sin solución registrada): revísalos y ciérralos si ya se atendieron.`);
+  let nAbs=0;
+  S.cases=S.cases.filter(E=>{ if(!E.imported||produced.has(E.id)||!String(E.id).startsWith('h_')) return true;
+    const imp0=E.impAt||Math.min(...E.acts.map(actCreated).filter(Boolean),E.mod||Date.now());
+    const touched=(E.mod||0)>imp0+60000||E.acts.some(a=>!a.imp&&actCreated(a)>imp0+60000);
+    if(touched) return true; nAbs++; if(!S.deleted.includes(E.id)) S.deleted.push(E.id); return false; });
+  S.settings.caseSeq=Math.max(seq,...S.cases.map(c=>c.num||0));
+  await saveCases(); await save('settings'); await save('deleted');
+  alert(`Bitácora importada: ${R.length} eventos.\n${nNew} casos nuevos${nUpd?`, ${nUpd} casos actualizados (se conservaron los seguimientos y cambios que hiciste en la app)`:''}${nAbs?`, ${nAbs} casos unidos a otro del mismo asunto`:''}.\n${nOpen} casos abiertos: revísalos y ciérralos si ya se atendieron.`);
   caseF={vista:'Todos',tipo:'Todos',banco:'Todos',q:''}; setTab('cases');
 }
 
@@ -4377,7 +4421,7 @@ function viewCfg(el){
       <button class="btn block" id="rs">Importar archivo de datos</button>
       <button class="btn danger block" id="wipe">Borrar todos los datos</button>
     </div>
-    <div class="note" style="text-align:center">Revisión TPV PCI · v3.0.1 · funciona sin conexión</div>`;
+    <div class="note" style="text-align:center">Revisión TPV PCI · v3.1 · funciona sin conexión</div>`;
   const drawEmps=()=>{$('#emps').innerHTML=Object.entries(st.empresas).map(([k,e])=>`<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:4px" data-k="${esc(k)}">
     <label class="f"><span>Clave</span><input type="text" data-x="k" value="${esc(k)}"></label>
     <label class="f"><span>Razón social</span><input type="text" data-x="razon" value="${esc(e.razon)}"></label>
